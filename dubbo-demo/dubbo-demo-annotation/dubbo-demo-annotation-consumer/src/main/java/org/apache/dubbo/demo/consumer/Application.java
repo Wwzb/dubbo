@@ -43,6 +43,6 @@ public class Application {
     @PropertySource("classpath:/spring/dubbo-consumer.properties")
     @ComponentScan(value = {"org.apache.dubbo.demo.consumer.comp"})
     static class ConsumerConfiguration {
-
+        //
     }
 }
