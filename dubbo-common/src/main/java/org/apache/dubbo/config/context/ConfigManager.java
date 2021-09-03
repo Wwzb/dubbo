@@ -16,6 +16,7 @@
  */
 package org.apache.dubbo.config.context;
 
+import org.apache.dubbo.common.config.CompositeConfiguration;
 import org.apache.dubbo.common.context.FrameworkExt;
 import org.apache.dubbo.common.context.LifecycleAdapter;
 import org.apache.dubbo.common.extension.DisableInject;
@@ -26,8 +27,10 @@ import org.apache.dubbo.common.utils.ConcurrentHashSet;
 import org.apache.dubbo.common.utils.ReflectUtils;
 import org.apache.dubbo.common.utils.StringUtils;
 import org.apache.dubbo.config.AbstractConfig;
+import org.apache.dubbo.config.AbstractInterfaceConfig;
 import org.apache.dubbo.config.ApplicationConfig;
 import org.apache.dubbo.config.ConfigCenterConfig;
+import org.apache.dubbo.config.ConfigKeys;
 import org.apache.dubbo.config.ConsumerConfig;
 import org.apache.dubbo.config.MetadataReportConfig;
 import org.apache.dubbo.config.MethodConfig;
@@ -41,21 +44,17 @@ import org.apache.dubbo.config.RegistryConfig;
 import org.apache.dubbo.config.ServiceConfigBase;
 import org.apache.dubbo.config.SslConfig;
 import org.apache.dubbo.rpc.model.ApplicationModel;
+import org.apache.dubbo.rpc.model.ScopeModelAware;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
 import static java.lang.Boolean.TRUE;
@@ -64,22 +63,32 @@ import static java.util.Optional.ofNullable;
 import static org.apache.dubbo.common.utils.StringUtils.isNotEmpty;
 import static org.apache.dubbo.config.AbstractConfig.getTagName;
 
-public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
+/**
+ * A lock-free config manager (through ConcurrentHashMap), for fast read operation.
+ * The Write operation lock with sub configs map of config type, for safely check and add new config.
+ */
+public class ConfigManager extends LifecycleAdapter implements FrameworkExt, ScopeModelAware {
 
     private static final Logger logger = LoggerFactory.getLogger(ConfigManager.class);
 
     public static final String NAME = "config";
     public static final String BEAN_NAME = "dubboConfigManager";
     private static final String CONFIG_NAME_READ_METHOD = "getName";
-    public static final String DUBBO_CONFIG_MODE = "dubbo.config.mode";
+    public static final String DUBBO_CONFIG_MODE = ConfigKeys.DUBBO_CONFIG_MODE;
 
-    private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    final Map<String, Map<String, AbstractConfig>> configsCache = new ConcurrentHashMap<>();
 
-    final Map<String, Map<String, AbstractConfig>> configsCache = newMap();
+    private Map<String, AbstractInterfaceConfig> referenceConfigCache = new ConcurrentHashMap<>();
+
+    private Map<String, AbstractInterfaceConfig> serviceConfigCache = new ConcurrentHashMap<>();
+
+    private Set<AbstractConfig> duplicatedConfigs = new ConcurrentHashSet<>();
 
     private ConfigMode configMode = ConfigMode.STRICT;
 
-    private static Map<Class, AtomicInteger> configIdIndexes = new ConcurrentHashMap<>();
+    private boolean ignoreDuplicatedInterface = false;
+
+    private static Map<String, AtomicInteger> configIdIndexes = new ConcurrentHashMap<>();
 
     private static Set<Class<? extends AbstractConfig>> uniqueConfigTypes = new ConcurrentHashSet<>();
 
@@ -95,26 +104,38 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
         for (Class<? extends AbstractConfig> configType : uniqueConfigTypes) {
             configNames.add(configType.getSimpleName());
         }
-        logger.info("Unique config types: " + configNames);
     }
+
+    private ApplicationModel applicationModel;
 
     public ConfigManager() {
     }
 
     @Override
+    public void setApplicationModel(ApplicationModel applicationModel) {
+        this.applicationModel = applicationModel;
+    }
+
+    @Override
     public void initialize() throws IllegalStateException {
-        String configModeStr = null;
+        CompositeConfiguration configuration = applicationModel.getApplicationEnvironment().getConfiguration();
+        String configModeStr = (String) configuration.getProperty(DUBBO_CONFIG_MODE);
         try {
-            configModeStr = (String) ApplicationModel.getEnvironment().getConfiguration().getProperty(DUBBO_CONFIG_MODE);
             if (StringUtils.hasText(configModeStr)) {
                 this.configMode = ConfigMode.valueOf(configModeStr.toUpperCase());
             }
-            logger.info("Dubbo config mode: " + configMode);
         } catch (Exception e) {
             String msg = "Illegal '" + DUBBO_CONFIG_MODE + "' config value [" + configModeStr + "], available values " + Arrays.toString(ConfigMode.values());
             logger.error(msg, e);
             throw new IllegalArgumentException(msg, e);
         }
+
+        String ignoreDuplicatedInterfaceStr = (String) configuration
+            .getProperty(ConfigKeys.DUBBO_CONFIG_IGNORE_DUPLICATED_INTERFACE);
+        if (ignoreDuplicatedInterfaceStr != null) {
+            this.ignoreDuplicatedInterface = Boolean.parseBoolean(ignoreDuplicatedInterfaceStr);
+        }
+        logger.info("Dubbo config mode: " + configMode +", ignore duplicated interface: " + ignoreDuplicatedInterface);
     }
 
 
@@ -354,6 +375,9 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     // ServiceConfig correlative methods
 
     public void addService(ServiceConfigBase<?> serviceConfig) {
+        if (serviceConfig.getScopeModel() == null) {
+            serviceConfig.setScopeModel(applicationModel.getDefaultModule());
+        }
         addConfig(serviceConfig);
     }
 
@@ -372,6 +396,9 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     // ReferenceConfig correlative methods
 
     public void addReference(ReferenceConfigBase<?> referenceConfig) {
+        if (referenceConfig.getScopeModel() == null) {
+            referenceConfig.setScopeModel(applicationModel.getDefaultModule());
+        }
         addConfig(referenceConfig);
     }
 
@@ -388,22 +415,19 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     }
 
     public void refreshAll() {
-        write(() -> {
-            // refresh all configs here,
-            getApplication().ifPresent(ApplicationConfig::refresh);
-            getMonitor().ifPresent(MonitorConfig::refresh);
-            getModule().ifPresent(ModuleConfig::refresh);
-            getMetrics().ifPresent(MetricsConfig::refresh);
-            getSsl().ifPresent(SslConfig::refresh);
+        // refresh all configs here,
+        getApplication().ifPresent(ApplicationConfig::refresh);
+        getMonitor().ifPresent(MonitorConfig::refresh);
+        getModule().ifPresent(ModuleConfig::refresh);
+        getMetrics().ifPresent(MetricsConfig::refresh);
+        getSsl().ifPresent(SslConfig::refresh);
 
-            getProtocols().forEach(ProtocolConfig::refresh);
-            getRegistries().forEach(RegistryConfig::refresh);
-            getProviders().forEach(ProviderConfig::refresh);
-            getConsumers().forEach(ConsumerConfig::refresh);
-            getConfigCenters().forEach(ConfigCenterConfig::refresh);
-            getMetadataConfigs().forEach(MetadataReportConfig::refresh);
-        });
-
+        getProtocols().forEach(ProtocolConfig::refresh);
+        getRegistries().forEach(RegistryConfig::refresh);
+        getProviders().forEach(ProviderConfig::refresh);
+        getConsumers().forEach(ConsumerConfig::refresh);
+        getConfigCenters().forEach(ConfigCenterConfig::refresh);
+        getMetadataConfigs().forEach(MetadataReportConfig::refresh);
     }
 
     /**
@@ -423,10 +447,11 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     }
 
     public void clear() {
-        write(() -> {
-            this.configsCache.clear();
-            configIdIndexes.clear();
-        });
+        this.configsCache.clear();
+        configIdIndexes.clear();
+        this.referenceConfigCache.clear();
+        this.serviceConfigCache.clear();
+        this.duplicatedConfigs.clear();
     }
 
     /**
@@ -447,6 +472,9 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
         if (config == null) {
             return;
         }
+        if (config.getScopeModel() == null) {
+            config.setScopeModel(applicationModel);
+        }
         addConfig(config, isUniqueConfig(config));
     }
 
@@ -462,10 +490,22 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
         if (config instanceof MethodConfig) {
             return null;
         }
-        return (T) write(() -> {
-            Map<String, AbstractConfig> configsMap = configsCache.computeIfAbsent(getTagName(config.getClass()), type -> newMap());
-            return addIfAbsent(config, configsMap, unique);
-        });
+
+        Map<String, AbstractConfig> configsMap = configsCache.computeIfAbsent(getTagName(config.getClass()), type -> newMap());
+
+        // fast check duplicated equivalent config before write lock
+        if (!(config instanceof ReferenceConfigBase || config instanceof ServiceConfigBase)) {
+            for (AbstractConfig value : configsMap.values()) {
+                if (value.equals(config)) {
+                    return (T) value;
+                }
+            }
+        }
+
+        // lock by config type
+        synchronized (configsMap) {
+            return (T) addIfAbsent(config, configsMap, unique);
+        }
     }
 
     public <C extends AbstractConfig> Map<String, C> getConfigsMap(Class<C> cls) {
@@ -473,15 +513,15 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     }
 
     private <C extends AbstractConfig> Map<String, C> getConfigsMap(String configType) {
-        return (Map<String, C>) read(() -> configsCache.getOrDefault(configType, emptyMap()));
+        return (Map<String, C>) configsCache.getOrDefault(configType, emptyMap());
     }
 
     private <C extends AbstractConfig> Collection<C> getConfigs(String configType) {
-        return (Collection<C>) read(() -> getConfigsMap(configType).values());
+        return (Collection<C>) getConfigsMap(configType).values();
     }
 
     public <C extends AbstractConfig> Collection<C> getConfigs(Class<C> configType) {
-        return (Collection<C>) read(() -> getConfigsMap(getTagName(configType)).values());
+        return (Collection<C>) getConfigsMap(getTagName(configType)).values();
     }
 
     /**
@@ -491,10 +531,7 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
      * @return
      */
     private <C extends AbstractConfig> C getConfigById(String configType, String id) {
-        return read(() -> {
-            Map<String, C> configsMap = (Map) configsCache.getOrDefault(configType, emptyMap());
-            return configsMap.get(id);
-        });
+        return (C) getConfigsMap(configType).get(id);
     }
 
     /**
@@ -504,26 +541,23 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
      * @return
      */
     private <C extends AbstractConfig> C getConfigByName(Class<? extends C> cls, String name) {
-        return read(() -> {
-            String configType = getTagName(cls);
-            Map<String, C> configsMap = (Map) configsCache.getOrDefault(configType, emptyMap());
-            if (configsMap.isEmpty()) {
-                return null;
-            }
-            // try find config by name
-            if (ReflectUtils.hasMethod(cls, CONFIG_NAME_READ_METHOD)) {
-                List<C> list = configsMap.values().stream()
-                        .filter(cfg -> name.equals(getConfigName(cfg)))
-                        .collect(Collectors.toList());
-                if (list.size() > 1) {
-                    throw new IllegalStateException("Found more than one config by name: " + name +
-                            ", instances: " + list + ". Please remove redundant configs or get config by id.");
-                } else if (list.size() == 1) {
-                    return list.get(0);
-                }
-            }
+        Map<String, ? extends C> configsMap = getConfigsMap(cls);
+        if (configsMap.isEmpty()) {
             return null;
-        });
+        }
+        // try find config by name
+        if (ReflectUtils.hasMethod(cls, CONFIG_NAME_READ_METHOD)) {
+            List<C> list = configsMap.values().stream()
+                .filter(cfg -> name.equals(getConfigName(cfg)))
+                .collect(Collectors.toList());
+            if (list.size() > 1) {
+                throw new IllegalStateException("Found more than one config by name: " + name +
+                    ", instances: " + list + ". Please remove redundant configs or get config by id.");
+            } else if (list.size() == 1) {
+                return list.get(0);
+            }
+        }
+        return null;
     }
 
     private <C extends AbstractConfig> String getConfigName(C config) {
@@ -535,56 +569,16 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     }
 
     protected <C extends AbstractConfig> C getSingleConfig(String configType) throws IllegalStateException {
-        return read(() -> {
-            Map<String, C> configsMap = (Map) configsCache.getOrDefault(configType, emptyMap());
-            int size = configsMap.size();
-            if (size < 1) {
+        Map<String, AbstractConfig> configsMap = getConfigsMap(configType);
+        int size = configsMap.size();
+        if (size < 1) {
 //                throw new IllegalStateException("No such " + configType.getName() + " is found");
-                return null;
-            } else if (size > 1) {
-                throw new IllegalStateException("Expected single instance of " + configType + ", but found " + size +
-                        " instances, please remove redundant configs. instances: "+configsMap.values());
-            }
-
-            return configsMap.values().iterator().next();
-        });
-    }
-
-    private <V> V write(Callable<V> callable) {
-        V value = null;
-        Lock writeLock = lock.writeLock();
-        try {
-            writeLock.lock();
-            value = callable.call();
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Throwable e) {
-            throw new RuntimeException(e.getCause());
-        } finally {
-            writeLock.unlock();
-        }
-        return value;
-    }
-
-    private void write(Runnable runnable) {
-        write(() -> {
-            runnable.run();
             return null;
-        });
-    }
-
-    private <V> V read(Callable<V> callable) {
-        Lock readLock = lock.readLock();
-        V value = null;
-        try {
-            readLock.lock();
-            value = callable.call();
-        } catch (Throwable e) {
-            throw new RuntimeException(e);
-        } finally {
-            readLock.unlock();
+        } else if (size > 1) {
+            throw new IllegalStateException("Expected single instance of " + configType + ", but found " + size +
+                " instances, please remove redundant configs. instances: "+configsMap.values());
         }
-        return value;
+        return (C) configsMap.values().iterator().next();
     }
 
     private static boolean isEquals(AbstractConfig oldOne, AbstractConfig newOne) {
@@ -610,7 +604,7 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
     }
 
     private static Map newMap() {
-        return new LinkedHashMap<>();
+        return new ConcurrentHashMap();
     }
 
     /**
@@ -628,22 +622,28 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
             return config;
         }
 
-        // find by value
-        // TODO Is there any problem with ignoring duplicate and equivalent but different ReferenceConfig instances?
-        Optional<C> prevConfig = configsMap.values().stream()
-                .filter(val -> isEquals(val, config))
-                .findFirst();
-        if (prevConfig.isPresent()) {
-            if (prevConfig.get() == config) {
-                // the new one is same as existing one
+        // check duplicated configs
+        // special check service and reference config by unique service name, speed up the processing of large number of instances
+        if (config instanceof ReferenceConfigBase || config instanceof ServiceConfigBase) {
+            C existedConfig = (C) checkDuplicatedInterfaceConfig((AbstractInterfaceConfig) config);
+            if (existedConfig != null) {
+                return existedConfig;
+            }
+        } else {
+            // find by value
+            Optional<C> prevConfig = findConfigByValue(configsMap.values(), config);
+            if (prevConfig.isPresent()) {
+                if (prevConfig.get() == config) {
+                    // the new one is same as existing one
+                    return prevConfig.get();
+                }
+
+                // ignore duplicated equivalent config
+                if (logger.isInfoEnabled() && duplicatedConfigs.add(config)) {
+                    logger.info("Ignore duplicated config: " + config);
+                }
                 return prevConfig.get();
             }
-
-            // ignore duplicated equivalent config
-            if (logger.isInfoEnabled()) {
-                logger.info("Ignore duplicated config: " + config);
-            }
-            return prevConfig.get();
         }
 
         // check unique config
@@ -661,39 +661,110 @@ public class ConfigManager extends LifecycleAdapter implements FrameworkExt {
                 }
                 case IGNORE: {
                     // ignore later config
-                    logger.warn(msgPrefix + "keep previous config and ignore later config: " + config);
+                    if (logger.isWarnEnabled() && duplicatedConfigs.add(config)) {
+                        logger.warn(msgPrefix + "keep previous config and ignore later config");
+                    }
                     return oldOne;
                 }
                 case OVERRIDE: {
                     // clear previous config, add new config
                     configsMap.clear();
-                    logger.warn(msgPrefix + "override previous config with later config: " + config);
+                    if (logger.isWarnEnabled() && duplicatedConfigs.add(config)) {
+                        logger.warn(msgPrefix + "override previous config with later config");
+                    }
                     break;
                 }
             }
         }
 
         String key = getId(config);
-            if (key == null) {
-                // generate key for non-default config compatible with API usages
+        if (key == null) {
+            do {
+                // generate key if id is not set
                 key = generateConfigId(config);
-            }
+            } while (configsMap.containsKey(key));
+        }
 
         C existedConfig = configsMap.get(key);
-
-        if (isEquals(existedConfig, config)) {
+        if (existedConfig != null && !isEquals(existedConfig, config)) {
             String type = config.getClass().getSimpleName();
-            throw new IllegalStateException(String.format("Duplicate %s found, there already has one default %s or more than two %ss have the same id, " +
-                    "you can try to give each %s a different id, key: %s, prev: %s, new: %s", type, type, type, type, key, existedConfig, config));
-        } else {
-            configsMap.put(key, config);
+            logger.warn(String.format("Duplicate %s found, there already has one default %s or more than two %ss have the same id, " +
+                    "you can try to give each %s a different id, override previous config with later config. id: %s, prev: %s, later: %s",
+                type, type, type, type, key, existedConfig, config));
         }
+
+        // override existed config if any
+        configsMap.put(key, config);
         return config;
     }
 
+    private <C extends AbstractConfig> Optional<C> findConfigByValue(Collection<C> values, C config) {
+        // 1. find same config instance (speed up raw api usage)
+        Optional<C> prevConfig = values.stream().filter(val -> val == config).findFirst();
+        if (prevConfig.isPresent()) {
+            return prevConfig;
+        }
+
+        // 2. find equal config
+        prevConfig = values.stream()
+            .filter(val -> isEquals(val, config))
+            .findFirst();
+        return prevConfig;
+    }
+
+    /**
+     * check duplicated ReferenceConfig/ServiceConfig
+     * @param config
+     */
+    private AbstractInterfaceConfig checkDuplicatedInterfaceConfig(AbstractInterfaceConfig config) {
+        String uniqueServiceName;
+        Map<String, AbstractInterfaceConfig> configCache;
+        if (config instanceof ReferenceConfigBase) {
+            ReferenceConfigBase<?> referenceConfig = (ReferenceConfigBase<?>) config;
+            uniqueServiceName = referenceConfig.getUniqueServiceName();
+            configCache = referenceConfigCache;
+        } else if (config instanceof ServiceConfigBase) {
+            ServiceConfigBase serviceConfig = (ServiceConfigBase) config;
+            uniqueServiceName = serviceConfig.getUniqueServiceName();
+            configCache = serviceConfigCache;
+        } else {
+            throw new IllegalArgumentException("Illegal type of parameter 'config' : " + config.getClass().getName());
+        }
+
+        AbstractInterfaceConfig prevConfig = configCache.putIfAbsent(uniqueServiceName, config);
+        if (prevConfig != null) {
+            if (prevConfig == config) {
+                return prevConfig;
+            }
+
+            if (prevConfig.equals(config)) {
+                // TODO Is there any problem with ignoring duplicate and equivalent but different ReferenceConfig instances?
+                if (logger.isWarnEnabled() && duplicatedConfigs.add(config)) {
+                    logger.warn("Ignore duplicated and equal config: "+config);
+                }
+                return prevConfig;
+            }
+
+            String configType = config.getClass().getSimpleName();
+            String msg = "Found multiple " + configType + "s with unique service name [" +
+                uniqueServiceName + "], previous: " + prevConfig + ", later: " + config + ". " +
+                "There can only be one instance of " + configType + " with the same triple (group, interface, version). " +
+                "If multiple instances are required for the same interface, please use a different group or version.";
+
+            if (logger.isWarnEnabled() && duplicatedConfigs.add(config)) {
+                logger.warn(msg);
+            }
+            if (!ignoreDuplicatedInterface) {
+                throw new IllegalStateException(msg);
+            }
+        }
+        return prevConfig;
+    }
+
     public static <C extends AbstractConfig> String generateConfigId(C config) {
-        int idx = configIdIndexes.computeIfAbsent(config.getClass(), clazz -> new AtomicInteger(0)).incrementAndGet();
-        return config.getClass().getSimpleName() + "#" + idx;
+        String tagName = getTagName(config.getClass());
+        int idx = configIdIndexes.computeIfAbsent(tagName, clazz -> new AtomicInteger(0)).incrementAndGet();
+        return tagName + "#" + idx;
     }
 
     static <C extends AbstractConfig> String getId(C config) {

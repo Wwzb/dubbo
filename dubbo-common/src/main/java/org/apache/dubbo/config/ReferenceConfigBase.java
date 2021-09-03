@@ -18,10 +18,11 @@ package org.apache.dubbo.config;
 
 import org.apache.dubbo.common.URL;
 import org.apache.dubbo.common.utils.ClassUtils;
+import org.apache.dubbo.common.utils.RegexProperties;
 import org.apache.dubbo.common.utils.StringUtils;
 import org.apache.dubbo.config.annotation.Reference;
 import org.apache.dubbo.config.support.Parameter;
-import org.apache.dubbo.rpc.model.ApplicationModel;
+import org.apache.dubbo.rpc.model.ScopeModel;
 import org.apache.dubbo.rpc.model.ServiceMetadata;
 import org.apache.dubbo.rpc.service.GenericService;
 import org.apache.dubbo.rpc.support.ProtocolUtils;
@@ -114,7 +115,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
     protected void preProcessRefresh() {
         super.preProcessRefresh();
         if (consumer == null) {
-            consumer = ApplicationModel.getConfigManager()
+            consumer = getConfigManager()
                     .getDefaultConsumer()
                     .orElseThrow(() -> new IllegalArgumentException("Default consumer is not initialized"));
         }
@@ -133,7 +134,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
     public Map<String, String> getMetaData() {
         Map<String, String> metaData = new HashMap<>();
         ConsumerConfig consumer = this.getConsumer();
-        // consumer should be inited at preProcessRefresh()
+        // consumer should be initialized at preProcessRefresh()
         if (isRefreshed() && consumer == null) {
             throw new IllegalStateException("Consumer is not initialized");
         }
@@ -149,7 +150,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
      * @return
      */
     public Class<?> getServiceInterfaceClass() {
-        Class actualInterface = interfaceClass;
+        Class<?> actualInterface = interfaceClass;
         if (interfaceClass == GenericService.class) {
             try {
                 actualInterface = Class.forName(interfaceName);
@@ -199,10 +200,20 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
         return null;
     }
 
+    @Override
+    public void setScopeModel(ScopeModel scopeModel) {
+        super.setScopeModel(scopeModel);
+        if (this.consumer != null && this.consumer.getScopeModel() != scopeModel) {
+            this.consumer.setScopeModel(scopeModel);
+        }
+    }
+
+    @Override
     public String getInterface() {
         return interfaceName;
     }
 
+    @Override
     public void setInterface(String interfaceName) {
         this.interfaceName = interfaceName;
     }
@@ -263,7 +274,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
                 }
             }
             if (resolveFile != null && resolveFile.length() > 0) {
-                Properties properties = new Properties();
+                Properties properties = new RegexProperties();
                 try (FileInputStream fis = new FileInputStream(new File(resolveFile))) {
                     properties.load(fis);
                 } catch (IOException e) {
@@ -296,7 +307,7 @@ public abstract class ReferenceConfigBase<T> extends AbstractReferenceConfig {
         super.computeValidRegistryIds();
     }
 
-    @Parameter(excluded = true)
+    @Parameter(excluded = true, attribute = false)
     public String getUniqueServiceName() {
         return interfaceName != null ? URL.buildKey(interfaceName, getGroup(), getVersion()) : null;
     }

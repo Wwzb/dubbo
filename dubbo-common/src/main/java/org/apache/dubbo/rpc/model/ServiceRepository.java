@@ -16,10 +16,13 @@
  */
 package org.apache.dubbo.rpc.model;
 
+import org.apache.dubbo.common.URL;
 import org.apache.dubbo.common.context.FrameworkExt;
 import org.apache.dubbo.common.context.LifecycleAdapter;
-import org.apache.dubbo.common.extension.ExtensionLoader;
+import org.apache.dubbo.common.extension.ExtensionAccessor;
+import org.apache.dubbo.common.extension.ExtensionAccessorAware;
 import org.apache.dubbo.common.utils.CollectionUtils;
+import org.apache.dubbo.common.utils.ConcurrentHashSet;
 import org.apache.dubbo.common.utils.StringUtils;
 import org.apache.dubbo.config.ReferenceConfigBase;
 import org.apache.dubbo.config.ServiceConfigBase;
@@ -34,7 +37,7 @@ import java.util.concurrent.ConcurrentMap;
 import static org.apache.dubbo.common.BaseServiceMetadata.interfaceFromServiceKey;
 import static org.apache.dubbo.common.BaseServiceMetadata.versionFromServiceKey;
 
-public class ServiceRepository extends LifecycleAdapter implements FrameworkExt {
+public class ServiceRepository extends LifecycleAdapter implements FrameworkExt, ExtensionAccessorAware {
 
     public static final String NAME = "repository";
 
@@ -50,9 +53,17 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
     // useful to find a provider model quickly with serviceInterfaceName:version
     private ConcurrentMap<String, ProviderModel> providersWithoutGroup = new ConcurrentHashMap<>();
 
+    // useful to find a url quickly with serviceInterfaceName:version
+    private ConcurrentMap<String, Set<URL>> providerUrlsWithoutGroup = new ConcurrentHashMap<>();
+    private ExtensionAccessor extensionAccessor;
+
     public ServiceRepository() {
+    }
+
+    @Override
+    public void initialize() throws IllegalStateException {
         Set<BuiltinServiceDetector> builtinServices
-                = ExtensionLoader.getExtensionLoader(BuiltinServiceDetector.class).getSupportedExtensionInstances();
+            = extensionAccessor.getExtensionLoader(BuiltinServiceDetector.class).getSupportedExtensionInstances();
         if (CollectionUtils.isNotEmpty(builtinServices)) {
             for (BuiltinServiceDetector service : builtinServices) {
                 registerService(service.getService());
@@ -62,7 +73,7 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
 
     public ServiceDescriptor registerService(Class<?> interfaceClazz) {
         return services.computeIfAbsent(interfaceClazz.getName(),
-                _k -> new ServiceDescriptor(interfaceClazz));
+            _k -> new ServiceDescriptor(interfaceClazz));
     }
 
     /**
@@ -100,8 +111,12 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
                                  Object proxy,
                                  ServiceMetadata serviceMetadata) {
         ConsumerModel consumerModel = new ConsumerModel(serviceMetadata.getServiceKey(), proxy, serviceDescriptor, rc,
-                serviceMetadata);
+            serviceMetadata, null);
         consumers.putIfAbsent(serviceKey, consumerModel);
+    }
+
+    public void registerConsumer(ConsumerModel consumerModel) {
+        consumers.putIfAbsent(consumerModel.getServiceKey(), consumerModel);
     }
 
     public void reRegisterConsumer(String newServiceKey, String serviceKey) {
@@ -117,10 +132,15 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
                                  ServiceDescriptor serviceModel,
                                  ServiceConfigBase<?> serviceConfig,
                                  ServiceMetadata serviceMetadata) {
-        ProviderModel providerModel = new ProviderModel(serviceKey, serviceInstance, serviceModel, serviceConfig,
-                serviceMetadata);
+        ProviderModel providerModel = new ProviderModel(serviceKey, serviceInstance, serviceModel,
+            serviceConfig, serviceMetadata);
         providers.putIfAbsent(serviceKey, providerModel);
         providersWithoutGroup.putIfAbsent(keyWithoutGroup(serviceKey), providerModel);
+    }
+
+    public void registerProvider(ProviderModel providerModel) {
+        providers.putIfAbsent(providerModel.getServiceKey(), providerModel);
+        providersWithoutGroup.putIfAbsent(keyWithoutGroup(providerModel.getServiceKey()), providerModel);
     }
 
     private static String keyWithoutGroup(String serviceKey) {
@@ -180,6 +200,24 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
         return consumers.get(serviceKey);
     }
 
+    public void registerProviderUrl(URL url) {
+        providerUrlsWithoutGroup.computeIfAbsent(keyWithoutGroup(url.getServiceKey()), (k) -> new ConcurrentHashSet<>()).add(url);
+    }
+
+    public Set<URL> lookupRegisteredProviderUrlsWithoutGroup(String key) {
+        return providerUrlsWithoutGroup.get(key);
+    }
+
+    @Deprecated
+    public ConcurrentMap<String, Set<URL>> getProviderUrlsWithoutGroup() {
+        return providerUrlsWithoutGroup;
+    }
+
+    @Deprecated
+    public void setProviderUrlsWithoutGroup(ConcurrentMap<String, Set<URL>> providerUrlsWithoutGroup) {
+        this.providerUrlsWithoutGroup = providerUrlsWithoutGroup;
+    }
+
     @Override
     public void destroy() throws IllegalStateException {
         // currently works for unit test
@@ -187,5 +225,10 @@ public class ServiceRepository extends LifecycleAdapter implements FrameworkExt 
         consumers.clear();
         providers.clear();
         providersWithoutGroup.clear();
+    }
+
+    @Override
+    public void setExtensionAccessor(ExtensionAccessor extensionAccessor) {
+        this.extensionAccessor = extensionAccessor;
     }
 }

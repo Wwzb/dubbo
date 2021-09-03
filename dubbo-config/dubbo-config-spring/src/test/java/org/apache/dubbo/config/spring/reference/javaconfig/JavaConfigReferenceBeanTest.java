@@ -21,18 +21,19 @@ import org.apache.dubbo.config.annotation.DubboService;
 import org.apache.dubbo.config.annotation.Reference;
 import org.apache.dubbo.config.bootstrap.DubboBootstrap;
 import org.apache.dubbo.config.spring.ReferenceBean;
-import org.apache.dubbo.config.spring.ZooKeeperServer;
 import org.apache.dubbo.config.spring.api.DemoService;
 import org.apache.dubbo.config.spring.api.HelloService;
 import org.apache.dubbo.config.spring.context.annotation.EnableDubbo;
-import org.apache.dubbo.config.spring.extension.SpringExtensionFactory;
+import org.apache.dubbo.config.spring.extension.SpringExtensionInjector;
 import org.apache.dubbo.config.spring.impl.HelloServiceImpl;
 import org.apache.dubbo.config.spring.reference.ReferenceBeanBuilder;
+import org.apache.dubbo.config.spring.registrycenter.RegistryCenter;
+import org.apache.dubbo.config.spring.registrycenter.ZookeeperMultipleRegistryCenter;
 import org.apache.dubbo.rpc.service.GenericException;
 import org.apache.dubbo.rpc.service.GenericService;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
@@ -40,48 +41,114 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.PropertySource;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 public class JavaConfigReferenceBeanTest {
 
-    @BeforeAll
-    public static void beforeAll() {
-        ZooKeeperServer.start();
-    }
+    private RegistryCenter multipleRegistryCenter;
 
     @BeforeEach
     public void setUp() {
+        multipleRegistryCenter = new ZookeeperMultipleRegistryCenter();
+        multipleRegistryCenter.startup();
         DubboBootstrap.reset();
+        SpringExtensionInjector.clearContexts();
     }
 
     @AfterEach
     public void tearDown() {
         DubboBootstrap.reset();
+        multipleRegistryCenter.shutdown();
+        SpringExtensionInjector.clearContexts();
     }
 
+    @Test
+    public void testAnnotationAtField() {
+        Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(CommonConfig.class,
+            AnnotationAtFieldConfiguration.class);
+
+        Map<String, HelloService> helloServiceMap = context.getBeansOfType(HelloService.class);
+        Assertions.assertEquals(2, helloServiceMap.size());
+        Assertions.assertNotNull(helloServiceMap.get("helloService"));
+        Assertions.assertNotNull(helloServiceMap.get("helloServiceImpl"));
+
+        Map<String, ReferenceBean> referenceBeanMap = context.getBeansOfType(ReferenceBean.class);
+        Assertions.assertEquals(1, referenceBeanMap.size());
+        ReferenceBean referenceBean = referenceBeanMap.get("&helloService");
+        Assertions.assertEquals("demo", referenceBean.getGroup());
+        Assertions.assertEquals(HelloService.class, referenceBean.getInterfaceClass());
+        Assertions.assertEquals(HelloService.class.getName(), referenceBean.getServiceInterface());
+
+        context.close();
+        Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
+    }
+
+    @Test
+    public void testAnnotationAtField2() {
+        AnnotationConfigApplicationContext context = null;
+        try {
+            context = new AnnotationConfigApplicationContext(CommonConfig.class,
+                AnnotationAtFieldConfiguration.class, AnnotationAtFieldConfiguration2.class);
+            Assertions.fail("Should not load duplicated @DubboReference fields");
+        } catch (Exception e) {
+            String msg = getStackTrace(e);
+            Assertions.assertTrue(msg.contains("Found multiple ReferenceConfigs with unique service name [demo/org.apache.dubbo.config.spring.api.HelloService]"), msg);
+        } finally {
+            if (context != null) {
+                context.close();
+            }
+        }
+    }
+
+    private String getStackTrace(Throwable ex) {
+        StringWriter stringWriter = new StringWriter();
+        ex.printStackTrace(new PrintWriter(stringWriter));
+        return stringWriter.toString();
+    }
 
     @Test
     public void testAnnotationBean() {
-        Assertions.assertEquals(0, SpringExtensionFactory.getContexts().size());
+        Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(CommonConfig.class,
                 AnnotationBeanConfiguration.class);
 
         Map<String, HelloService> helloServiceMap = context.getBeansOfType(HelloService.class);
         Assertions.assertEquals(2, helloServiceMap.size());
         Assertions.assertNotNull(helloServiceMap.get("helloService"));
+        Assertions.assertNotNull(helloServiceMap.get("helloServiceImpl"));
+
+        Map<String, ReferenceBean> referenceBeanMap = context.getBeansOfType(ReferenceBean.class);
+        Assertions.assertEquals(1, referenceBeanMap.size());
+        ReferenceBean referenceBean = referenceBeanMap.get("&helloService");
+        Assertions.assertEquals("demo", referenceBean.getGroup());
+        Assertions.assertEquals(HelloService.class, referenceBean.getInterfaceClass());
+        Assertions.assertEquals(HelloService.class.getName(), referenceBean.getServiceInterface());
+
+        context.close();
+        Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
+    }
+
+    @Test
+    public void testGenericServiceAnnotationBean() {
+        Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(CommonConfig.class,
+            GenericServiceAnnotationBeanConfiguration.class);
+
+        Map<String, HelloService> helloServiceMap = context.getBeansOfType(HelloService.class);
+        Assertions.assertEquals(1, helloServiceMap.size());
+        Assertions.assertNotNull(helloServiceMap.get("helloServiceImpl"));
 
         Map<String, GenericService> genericServiceMap = context.getBeansOfType(GenericService.class);
         Assertions.assertEquals(3, genericServiceMap.size());
         Assertions.assertNotNull(genericServiceMap.get("genericHelloService"));
 
         Map<String, ReferenceBean> referenceBeanMap = context.getBeansOfType(ReferenceBean.class);
-        Assertions.assertEquals(3, referenceBeanMap.size());
-        ReferenceBean referenceBean = referenceBeanMap.get("&helloService");
-        Assertions.assertEquals("demo", referenceBean.getGroup());
-        Assertions.assertEquals(HelloService.class, referenceBean.getInterfaceClass());
-        Assertions.assertEquals(HelloService.class.getName(), referenceBean.getServiceInterface());
+        Assertions.assertEquals(2, referenceBeanMap.size());
 
         ReferenceBean genericHelloServiceReferenceBean = referenceBeanMap.get("&genericHelloService");
         Assertions.assertEquals("demo", genericHelloServiceReferenceBean.getGroup());
@@ -99,28 +166,51 @@ public class JavaConfigReferenceBeanTest {
         Assertions.assertEquals("Hello Dubbo", sayHelloResult);
 
         context.close();
-        Assertions.assertEquals(1, SpringExtensionFactory.getContexts().size());
+        Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
     }
 
     @Test
-    public void testGenericReferenceBean() {
-        Assertions.assertEquals(0, SpringExtensionFactory.getContexts().size());
+    public void testReferenceBean() {
+        Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
         AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(CommonConfig.class,
                 ReferenceBeanConfiguration.class);
 
         Map<String, HelloService> helloServiceMap = context.getBeansOfType(HelloService.class);
         Assertions.assertEquals(2, helloServiceMap.size());
         Assertions.assertNotNull(helloServiceMap.get("helloService"));
-
-        Map<String, GenericService> genericServiceMap = context.getBeansOfType(GenericService.class);
-        Assertions.assertEquals(2, genericServiceMap.size());
-        Assertions.assertNotNull(genericServiceMap.get("genericHelloService"));
+        Assertions.assertNotNull(helloServiceMap.get("helloServiceImpl"));
 
         Map<String, ReferenceBean> referenceBeanMap = context.getBeansOfType(ReferenceBean.class);
-        Assertions.assertEquals(3, referenceBeanMap.size());
+        Assertions.assertEquals(2, referenceBeanMap.size());
         ReferenceBean referenceBean = referenceBeanMap.get("&helloService");
         Assertions.assertEquals(HelloService.class, referenceBean.getInterfaceClass());
         Assertions.assertEquals(HelloService.class.getName(), referenceBean.getServiceInterface());
+
+        ReferenceBean demoServiceReferenceBean = referenceBeanMap.get("&demoService");
+        Assertions.assertEquals(DemoService.class, demoServiceReferenceBean.getInterfaceClass());
+        Assertions.assertEquals(DemoService.class.getName(), demoServiceReferenceBean.getServiceInterface());
+
+        context.close();
+        Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
+    }
+
+    @Test
+    public void testGenericServiceReferenceBean() {
+        Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext(CommonConfig.class,
+            GenericServiceReferenceBeanConfiguration.class);
+
+        Map<String, HelloService> helloServiceMap = context.getBeansOfType(HelloService.class);
+        Assertions.assertEquals(1, helloServiceMap.size());
+        Assertions.assertNotNull(helloServiceMap.get("helloServiceImpl"));
+
+        Map<String, GenericService> genericServiceMap = context.getBeansOfType(GenericService.class);
+        Assertions.assertEquals(2, genericServiceMap.size());
+        Assertions.assertNotNull(genericServiceMap.get("localMissClassGenericServiceImpl"));
+        Assertions.assertNotNull(genericServiceMap.get("genericHelloService"));
+
+        Map<String, ReferenceBean> referenceBeanMap = context.getBeansOfType(ReferenceBean.class);
+        Assertions.assertEquals(1, referenceBeanMap.size());
 
         ReferenceBean genericHelloServiceReferenceBean = referenceBeanMap.get("&genericHelloService");
         Assertions.assertEquals("demo", genericHelloServiceReferenceBean.getGroup());
@@ -128,14 +218,14 @@ public class JavaConfigReferenceBeanTest {
         Assertions.assertEquals(HelloService.class.getName(), genericHelloServiceReferenceBean.getServiceInterface());
 
         context.close();
-        Assertions.assertEquals(1, SpringExtensionFactory.getContexts().size());
+        Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
     }
 
     @Test
     public void testRawReferenceBean() {
         AnnotationConfigApplicationContext context = null;
         try {
-            Assertions.assertEquals(0, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
             context = new AnnotationConfigApplicationContext(CommonConfig.class, ReferenceBeanWithoutGenericTypeConfiguration.class);
             Assertions.fail("Should not load application");
 
@@ -147,7 +237,7 @@ public class JavaConfigReferenceBeanTest {
             if (context != null) {
                 context.close();
             }
-            Assertions.assertEquals(1, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
         }
 
     }
@@ -156,7 +246,7 @@ public class JavaConfigReferenceBeanTest {
     public void testInconsistentBean() {
         AnnotationConfigApplicationContext context = null;
         try {
-            Assertions.assertEquals(0, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
             context = new AnnotationConfigApplicationContext(CommonConfig.class, InconsistentBeanConfiguration.class);
             Assertions.fail("Should not load application");
         } catch (Exception e) {
@@ -168,7 +258,7 @@ public class JavaConfigReferenceBeanTest {
             if (context != null) {
                 context.close();
             }
-            Assertions.assertEquals(1, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
         }
     }
 
@@ -176,7 +266,7 @@ public class JavaConfigReferenceBeanTest {
     public void testMissingGenericTypeBean() {
         AnnotationConfigApplicationContext context = null;
         try {
-            Assertions.assertEquals(0, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
             context = new AnnotationConfigApplicationContext(CommonConfig.class, MissingGenericTypeAnnotationBeanConfiguration.class);
             Assertions.fail("Should not load application");
         } catch (Exception e) {
@@ -187,7 +277,7 @@ public class JavaConfigReferenceBeanTest {
             if (context != null) {
                 context.close();
             }
-            Assertions.assertEquals(1, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
         }
     }
 
@@ -195,7 +285,7 @@ public class JavaConfigReferenceBeanTest {
     public void testMissingInterfaceTypeBean() {
         AnnotationConfigApplicationContext context = null;
         try {
-            Assertions.assertEquals(0, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(0, SpringExtensionInjector.getContexts().size());
             context = new AnnotationConfigApplicationContext(CommonConfig.class, MissingInterfaceTypeAnnotationBeanConfiguration.class);
             Assertions.fail("Should not load application");
         } catch (Exception e) {
@@ -205,7 +295,7 @@ public class JavaConfigReferenceBeanTest {
             if (context != null) {
                 context.close();
             }
-            Assertions.assertEquals(1, SpringExtensionFactory.getContexts().size());
+            Assertions.assertEquals(1, SpringExtensionInjector.getContexts().size());
         }
     }
 
@@ -240,6 +330,23 @@ public class JavaConfigReferenceBeanTest {
         }
     }
 
+
+    @Configuration
+    public static class AnnotationAtFieldConfiguration {
+
+        @DubboReference(group = "${myapp.group}")
+        private HelloService helloService;
+
+    }
+
+    @Configuration
+    public static class AnnotationAtFieldConfiguration2 {
+
+        @DubboReference(group = "${myapp.group}", timeout = 2000)
+        private HelloService helloService;
+
+    }
+
     @Configuration
     public static class AnnotationBeanConfiguration {
 
@@ -248,6 +355,11 @@ public class JavaConfigReferenceBeanTest {
         public ReferenceBean<HelloService> helloService() {
             return new ReferenceBean();
         }
+
+    }
+
+    @Configuration
+    public static class GenericServiceAnnotationBeanConfiguration {
 
         @Bean
         @Reference(group = "${myapp.group}", interfaceClass = HelloService.class)
@@ -260,7 +372,6 @@ public class JavaConfigReferenceBeanTest {
         public ReferenceBean<GenericService> genericServiceWithoutInterface() {
             return new ReferenceBean();
         }
-
     }
 
     @Configuration
@@ -277,15 +388,18 @@ public class JavaConfigReferenceBeanTest {
         public ReferenceBean<DemoService> demoService() {
             return new ReferenceBean();
         }
+    }
+
+    @Configuration
+    public static class GenericServiceReferenceBeanConfiguration {
 
         @Bean
         public ReferenceBean<GenericService> genericHelloService() {
             return new ReferenceBeanBuilder()
-                    .setGroup("${myapp.group}")
-                    .setInterface(HelloService.class)
-                    .build();
+                .setGroup("${myapp.group}")
+                .setInterface(HelloService.class)
+                .build();
         }
-
     }
 
     @Configuration
