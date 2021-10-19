@@ -16,6 +16,7 @@
  */
 package org.apache.dubbo.config;
 
+import org.apache.dubbo.config.context.ModuleConfigManager;
 import org.apache.dubbo.config.support.Parameter;
 import org.apache.dubbo.rpc.model.ApplicationModel;
 import org.apache.dubbo.rpc.model.ModuleModel;
@@ -30,7 +31,7 @@ import java.util.Map;
  */
 public abstract class AbstractMethodConfig extends AbstractConfig {
 
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 5809761483000878437L;
 
     /**
      * The timeout for remote invocation in milliseconds
@@ -103,16 +104,22 @@ public abstract class AbstractMethodConfig extends AbstractConfig {
     }
 
     @Override
-    public void setScopeModel(ScopeModel scopeModel) {
-        if (!(scopeModel instanceof ModuleModel)) {
-            throw new IllegalArgumentException("Invalid scope model, expect to be a ModuleModel but got: " + scopeModel);
-        }
-        super.setScopeModel(scopeModel);
+    public ModuleModel getScopeModel() {
+        return (ModuleModel) scopeModel;
     }
 
     @Override
-    public ModuleModel getScopeModel() {
-        return (ModuleModel) scopeModel;
+    protected void checkScopeModel(ScopeModel scopeModel) {
+        if (scopeModel == null) {
+            throw new IllegalArgumentException("scopeModel cannot be null");
+        }
+        if (!(scopeModel instanceof ModuleModel)) {
+            throw new IllegalArgumentException("Invalid scope model, expect to be a ModuleModel but got: " + scopeModel);
+        }
+    }
+
+    protected ModuleConfigManager getModuleConfigManager() {
+        return getScopeModel().getConfigManager();
     }
 
     public Integer getForks() {

@@ -22,6 +22,7 @@ import org.apache.dubbo.rpc.model.ApplicationModel;
 import com.alibaba.fastjson.JSON;
 
 import java.beans.Transient;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,8 +59,15 @@ public class DefaultServiceInstance implements ServiceInstance {
 
     private transient String address;
     private transient MetadataInfo serviceMetadata;
-    // used at runtime
-    private transient String registryCluster; // extendParams can be more flexiable, but one single property uses less space
+
+    /**
+     * used at runtime
+     */
+    private transient String registryCluster;
+
+    /**
+     * extendParams can be more flexible, but one single property uses less space
+     */
     private transient Map<String, String> extendParams;
     private transient List<Endpoint> endpoints;
     private transient Map<String, Object> attributes = new HashMap<>();
@@ -73,13 +81,13 @@ public class DefaultServiceInstance implements ServiceInstance {
         this.port = other.port;
         this.enabled = other.enabled;
         this.healthy = other.healthy;
-        this.metadata = other.metadata;
         this.serviceMetadata = other.serviceMetadata;
         this.registryCluster = other.registryCluster;
-        this.extendParams = other.extendParams;
-        this.endpoints = other.endpoints;
         this.address = null;
-        this.attributes = other.attributes;
+        this.metadata = new HashMap<>(other.metadata);
+        this.attributes = new HashMap<>(other.attributes);
+        this.extendParams = other.extendParams != null ? new HashMap<>(other.extendParams) : other.extendParams;
+        this.endpoints = other.endpoints != null ? new ArrayList<>(other.endpoints) : other.endpoints;
     }
 
     public DefaultServiceInstance(String serviceName, String host, Integer port, ApplicationModel applicationModel) {
@@ -174,6 +182,7 @@ public class DefaultServiceInstance implements ServiceInstance {
         return registryCluster;
     }
 
+    @Override
     public void setRegistryCluster(String registryCluster) {
         this.registryCluster = registryCluster;
     }
@@ -212,6 +221,7 @@ public class DefaultServiceInstance implements ServiceInstance {
     }
 
     @Override
+    @Transient
     public Map<String, Object> getAttributes() {
         return attributes;
     }

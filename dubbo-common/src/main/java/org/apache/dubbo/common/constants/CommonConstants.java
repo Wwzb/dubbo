@@ -304,6 +304,8 @@ public interface CommonConstants {
 
     String INVOKER_LISTENER_KEY = "invoker.listener";
 
+    String REGISTRY_PROTOCOL_LISTENER_KEY = "registry.protocol.listener";
+
     String DUBBO_VERSION_KEY = "dubbo";
 
     String TAG_KEY = "dubbo.tag";
@@ -320,10 +322,6 @@ public interface CommonConstants {
     String SERVICE_FILTER_KEY = "service.filter";
 
     String EXPORTER_LISTENER_KEY = "exporter.listener";
-
-    String METRICS_PORT = "metrics.port";
-
-    String METRICS_PROTOCOL = "metrics.protocol";
 
     /**
      * After simplify the registry, should add some parameter individually for provider.
@@ -450,6 +448,10 @@ public interface CommonConstants {
 
     int DEFAULT_REFER_THREAD_NUM = 10;
 
+    int DEFAULT_DELAY_NOTIFICATION_TIME = 5000;
+
+    int DEFAULT_DELAY_EXECUTE_TIMES = 10;
+
     /**
      * Url merge processor key
      */
@@ -475,5 +477,11 @@ public interface CommonConstants {
      * @since 2.7.6
      */
     String DUBBO_NETWORK_IGNORED_INTERFACE = "dubbo.network.interface.ignored";
+
+    String OS_NAME_KEY = "os.name";
+
+    String OS_LINUX_PREFIX = "linux";
+
+    String OS_WIN_PREFIX = "win";
 
 }

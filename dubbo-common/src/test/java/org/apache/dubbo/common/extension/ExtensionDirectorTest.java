@@ -18,7 +18,6 @@ package org.apache.dubbo.common.extension;
 
 import org.apache.dubbo.common.extension.director.FooAppService;
 import org.apache.dubbo.common.extension.director.FooFrameworkService;
-import org.apache.dubbo.common.extension.director.FooModuleProvider;
 import org.apache.dubbo.common.extension.director.FooModuleService;
 import org.apache.dubbo.common.extension.director.impl.TestAppService;
 import org.apache.dubbo.common.extension.director.impl.TestFrameworkService;
@@ -49,9 +48,9 @@ public class ExtensionDirectorTest {
         // 2. Child ExtensionDirector can get extension instance from parent
         // 3. Parent ExtensionDirector can't get extension instance from child
 
-        ExtensionDirector fwExtensionDirector = new ExtensionDirector(null, ExtensionScope.FRAMEWORK);
-        ExtensionDirector appExtensionDirector = new ExtensionDirector(fwExtensionDirector, ExtensionScope.APPLICATION);
-        ExtensionDirector moduleExtensionDirector = new ExtensionDirector(appExtensionDirector, ExtensionScope.MODULE);
+        ExtensionDirector fwExtensionDirector = new ExtensionDirector(null, ExtensionScope.FRAMEWORK, FrameworkModel.defaultModel());
+        ExtensionDirector appExtensionDirector = new ExtensionDirector(fwExtensionDirector, ExtensionScope.APPLICATION, ApplicationModel.defaultModel());
+        ExtensionDirector moduleExtensionDirector = new ExtensionDirector(appExtensionDirector, ExtensionScope.MODULE, ApplicationModel.defaultModel().getDefaultModule());
 
         // test module extension loader
         FooFrameworkService testFwSrvFromModule = moduleExtensionDirector.getExtension(FooFrameworkService.class, testFwSrvName);
@@ -175,7 +174,6 @@ public class ExtensionDirectorTest {
         Assertions.assertFalse(applicationsOfFw1.contains(applicationModel21));
 
         Collection<ModuleModel> modulesOfApp11 = applicationModel11.getModuleModels();
-        Assertions.assertEquals(2, modulesOfApp11.size());
         Assertions.assertTrue(modulesOfApp11.contains(moduleModel111));
         Assertions.assertTrue(modulesOfApp11.contains(moduleModel112));
 

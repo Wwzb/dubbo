@@ -219,7 +219,6 @@ public class ApplicationConfig extends AbstractConfig {
 
     public void setName(String name) {
         this.name = name;
-        //this.updateIdIfAbsent(name);
     }
 
     @Parameter(key = APPLICATION_VERSION_KEY)
@@ -331,7 +330,7 @@ public class ApplicationConfig extends AbstractConfig {
 
     public void setLogger(String logger) {
         this.logger = logger;
-        LoggerFactory.setLoggerAdapter(logger);
+        LoggerFactory.setLoggerAdapter(getApplicationModel().getFrameworkModel(), logger);
     }
 
     @Parameter(key = DUMP_DIRECTORY)

@@ -23,12 +23,13 @@ import org.apache.dubbo.common.logger.Logger;
 import org.apache.dubbo.common.logger.LoggerFactory;
 import org.apache.dubbo.common.threadlocal.NamedInternalThreadFactory;
 import org.apache.dubbo.common.threadpool.ThreadPool;
-import org.apache.dubbo.common.utils.CollectionUtils;
 import org.apache.dubbo.common.utils.ExecutorUtil;
 import org.apache.dubbo.common.utils.NamedThreadFactory;
 import org.apache.dubbo.config.ConsumerConfig;
+import org.apache.dubbo.config.ModuleConfig;
 import org.apache.dubbo.config.ProviderConfig;
 import org.apache.dubbo.rpc.model.ApplicationModel;
+import org.apache.dubbo.rpc.model.ModuleModel;
 import org.apache.dubbo.rpc.model.ScopeModelAware;
 
 import java.util.List;
@@ -41,7 +42,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import static org.apache.dubbo.common.constants.CommonConstants.CONSUMER_SIDE;
 import static org.apache.dubbo.common.constants.CommonConstants.DEFAULT_EXPORT_THREAD_NUM;
@@ -49,6 +49,7 @@ import static org.apache.dubbo.common.constants.CommonConstants.DEFAULT_REFER_TH
 import static org.apache.dubbo.common.constants.CommonConstants.EXECUTOR_SERVICE_COMPONENT_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.SIDE_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.THREADS_KEY;
+import static org.apache.dubbo.common.constants.CommonConstants.THREAD_NAME_KEY;
 
 /**
  * Consider implementing {@code Licycle} to enable executors shutdown when the process stops.
@@ -58,17 +59,18 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
 
     private int DEFAULT_SCHEDULER_SIZE = Runtime.getRuntime().availableProcessors();
 
-    private final ExecutorService SHARED_EXECUTOR = Executors.newCachedThreadPool(new NamedThreadFactory("DubboSharedHandler", true));
+    private final ExecutorService sharedExecutor;
+    private final ScheduledExecutorService sharedScheduledExecutor;
 
     private Ring<ScheduledExecutorService> scheduledExecutors = new Ring<>();
 
-    private volatile ExecutorService serviceExportExecutor;
+    private volatile ScheduledExecutorService serviceExportExecutor;
 
     private volatile ExecutorService serviceReferExecutor;
 
     private ScheduledExecutorService reconnectScheduledExecutor;
 
-    public  Ring<ScheduledExecutorService> registryNotificationExecutorRing = new Ring<>();
+    public Ring<ScheduledExecutorService> registryNotificationExecutorRing = new Ring<>();
 
     private Ring<ScheduledExecutorService> serviceDiscoveryAddressNotificationExecutorRing = new Ring<>();
 
@@ -78,25 +80,28 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
 
     private ExecutorService poolRouterExecutor;
 
-    private static Ring<ExecutorService> executorServiceRing = new Ring<ExecutorService>();
+    private Ring<ExecutorService> executorServiceRing = new Ring<ExecutorService>();
 
-    private static final Object LOCK = new Object();
+    private final Object LOCK = new Object();
     private ExtensionAccessor extensionAccessor;
 
     private ApplicationModel applicationModel;
 
     public DefaultExecutorRepository() {
+        sharedExecutor = Executors.newCachedThreadPool(new NamedThreadFactory("Dubbo-shared-handler", true));
+        sharedScheduledExecutor = Executors.newScheduledThreadPool(8, new NamedThreadFactory("Dubbo-shared-scheduler", true));
+
         for (int i = 0; i < DEFAULT_SCHEDULER_SIZE; i++) {
             ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(
-                new NamedThreadFactory("Dubbo-framework-scheduler"));
+                new NamedThreadFactory("Dubbo-framework-scheduler-" + i, true));
             scheduledExecutors.addItem(scheduler);
 
             executorServiceRing.addItem(new ThreadPoolExecutor(1, 1,
                 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<Runnable>(1024), new NamedInternalThreadFactory("Dubbo-state-router-loop", true)
+                new LinkedBlockingQueue<Runnable>(1024), new NamedInternalThreadFactory("Dubbo-state-router-loop-" + i, true)
                 , new ThreadPoolExecutor.AbortPolicy()));
         }
-//
+
 //        reconnectScheduledExecutor = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("Dubbo-reconnect-scheduler"));
         poolRouterExecutor = new ThreadPoolExecutor(1, 10, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<Runnable>(1024),
             new NamedInternalThreadFactory("Dubbo-state-router-pool-router", true), new ThreadPoolExecutor.AbortPolicy());
@@ -124,7 +129,11 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
         Map<Integer, ExecutorService> executors = data.computeIfAbsent(EXECUTOR_SERVICE_COMPONENT_KEY, k -> new ConcurrentHashMap<>());
         // Consumer's executor is sharing globally, key=Integer.MAX_VALUE. Provider's executor is sharing by protocol.
         Integer portKey = CONSUMER_SIDE.equalsIgnoreCase(url.getParameter(SIDE_KEY)) ? Integer.MAX_VALUE : url.getPort();
-        ExecutorService executor = executors.computeIfAbsent(portKey, k -> createExecutor(url));
+        if (url.getParameter(THREAD_NAME_KEY) == null) {
+            url = url.putAttribute(THREAD_NAME_KEY, "Dubbo-protocol-"+portKey);
+        }
+        URL finalUrl = url;
+        ExecutorService executor = executors.computeIfAbsent(portKey, k -> createExecutor(finalUrl));
         // If executor has been shut down, create a new one
         if (executor.isShutdown() || executor.isTerminated()) {
             executors.remove(portKey);
@@ -157,7 +166,7 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
             logger.info("Executor for " + url + " is shutdown.");
         }
         if (executor == null) {
-            return SHARED_EXECUTOR;
+            return sharedExecutor;
         } else {
             return executor;
         }
@@ -202,17 +211,16 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
     }
 
     @Override
-    public ExecutorService getServiceExportExecutor() {
+    public ScheduledExecutorService getServiceExportExecutor() {
         if (serviceExportExecutor == null) {
             synchronized (LOCK) {
                 if (serviceExportExecutor == null) {
                     int coreSize = getExportThreadNum();
-                    serviceExportExecutor = Executors.newFixedThreadPool(coreSize,
+                    serviceExportExecutor = Executors.newScheduledThreadPool(coreSize,
                         new NamedThreadFactory("Dubbo-service-export", true));
                 }
             }
         }
-
         return serviceExportExecutor;
     }
 
@@ -220,33 +228,15 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
     public void shutdownServiceExportExecutor() {
         synchronized (LOCK) {
             if (serviceExportExecutor != null && !serviceExportExecutor.isShutdown()) {
-                try{
+                try {
                     serviceExportExecutor.shutdown();
-                }catch (Throwable ignored){
+                } catch (Throwable ignored) {
                     // ignored
-                    logger.warn(ignored.getMessage(),ignored);
+                    logger.warn(ignored.getMessage(), ignored);
                 }
             }
-
             serviceExportExecutor = null;
         }
-    }
-
-    private Integer getExportThreadNum() {
-        List<Integer> threadNum = ApplicationModel.ofNullable(applicationModel).getApplicationConfigManager().getProviders()
-            .stream()
-            .map(ProviderConfig::getExportThreadNum)
-            .filter(k -> k != null && k > 0)
-            .collect(Collectors.toList());
-
-        if (CollectionUtils.isEmpty(threadNum)) {
-            logger.info("Cannot get config `export-thread-num` for service export thread, using default: " + DEFAULT_EXPORT_THREAD_NUM);
-            return DEFAULT_EXPORT_THREAD_NUM;
-        } else if (threadNum.size() > 1) {
-            logger.info("Detect multiple config `export-thread-num` for service export thread, using: " + threadNum.get(0));
-        }
-
-        return threadNum.get(0);
     }
 
     @Override
@@ -260,7 +250,6 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
                 }
             }
         }
-
         return serviceReferExecutor;
     }
 
@@ -268,32 +257,78 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
     public void shutdownServiceReferExecutor() {
         synchronized (LOCK) {
             if (serviceReferExecutor != null && !serviceReferExecutor.isShutdown()) {
-                try{
+                try {
                     serviceReferExecutor.shutdown();
-                }catch (Throwable ignored){
-                    logger.warn(ignored.getMessage(),ignored);
+                } catch (Throwable ignored) {
+                    logger.warn(ignored.getMessage(), ignored);
                 }
             }
-
             serviceReferExecutor = null;
         }
     }
 
-    private Integer getReferThreadNum() {
-        List<Integer> threadNum = ApplicationModel.ofNullable(applicationModel).getApplicationConfigManager().getConsumers()
-            .stream()
-            .map(ConsumerConfig::getReferThreadNum)
-            .filter(k -> k != null && k > 0)
-            .collect(Collectors.toList());
-
-        if (CollectionUtils.isEmpty(threadNum)) {
-            logger.info("Cannot get config `refer-thread-num` for service refer thread, using default: " + DEFAULT_REFER_THREAD_NUM);
-            return DEFAULT_REFER_THREAD_NUM;
-        } else if (threadNum.size() > 1) {
-            logger.info("Detect multiple config `refer-thread-num` for service refer thread, using: " + threadNum.get(0));
+    private Integer getExportThreadNum() {
+        Integer threadNum = null;
+        ApplicationModel applicationModel = ApplicationModel.ofNullable(this.applicationModel);
+        for (ModuleModel moduleModel : applicationModel.getPubModuleModels()) {
+            threadNum = getExportThreadNum(moduleModel);
+            if (threadNum != null) {
+                break;
+            }
         }
+        if (threadNum == null) {
+            logger.info("Cannot get config `export-thread-num` from module config, using default: " + DEFAULT_EXPORT_THREAD_NUM);
+            return DEFAULT_EXPORT_THREAD_NUM;
+        }
+        return threadNum;
+    }
 
-        return threadNum.get(0);
+    private Integer getExportThreadNum(ModuleModel moduleModel) {
+        ModuleConfig moduleConfig = moduleModel.getConfigManager().getModule().orElse(null);
+        if (moduleConfig == null) {
+            return null;
+        }
+        Integer threadNum = moduleConfig.getExportThreadNum();
+        if (threadNum == null) {
+            threadNum = moduleModel.getConfigManager().getProviders()
+                .stream()
+                .map(ProviderConfig::getExportThreadNum)
+                .filter(k -> k != null && k > 0)
+                .findAny().orElse(null);
+        }
+        return threadNum;
+    }
+
+    private Integer getReferThreadNum() {
+        Integer threadNum = null;
+        ApplicationModel applicationModel = ApplicationModel.ofNullable(this.applicationModel);
+        for (ModuleModel moduleModel : applicationModel.getPubModuleModels()) {
+            threadNum = getReferThreadNum(moduleModel);
+            if (threadNum != null) {
+                break;
+            }
+        }
+        if (threadNum == null) {
+            logger.info("Cannot get config `refer-thread-num` from module config, using default: " + DEFAULT_REFER_THREAD_NUM);
+            return DEFAULT_REFER_THREAD_NUM;
+        }
+        return threadNum;
+    }
+
+    private Integer getReferThreadNum(ModuleModel moduleModel) {
+        ModuleConfig moduleConfig = moduleModel.getConfigManager().getModule().orElse(null);
+        if (moduleConfig == null) {
+            return null;
+        }
+        Integer threadNum = moduleConfig.getReferThreadNum();
+        if (threadNum == null) {
+            threadNum = moduleModel.getConfigManager().getConsumers()
+                .stream()
+                .map(ConsumerConfig::getReferThreadNum)
+                .filter(k -> k != null && k > 0)
+                .findAny().orElse(null);
+        }
+        return threadNum;
     }
 
     @Override
@@ -312,7 +347,12 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
 
     @Override
     public ExecutorService getSharedExecutor() {
-        return SHARED_EXECUTOR;
+        return sharedExecutor;
+    }
+
+    @Override
+    public ScheduledExecutorService getSharedScheduledExecutor() {
+        return sharedScheduledExecutor;
     }
 
     private ExecutorService createExecutor(URL url) {
@@ -326,20 +366,10 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
 
     @Override
     public void destroyAll() {
-        try{
-            poolRouterExecutor.shutdown();
-        }catch (Throwable ignored){
-            // ignored
-            logger.warn(ignored.getMessage(),ignored);
-        }
-//        serviceDiscoveryAddressNotificationExecutor.shutdown();
-//        registryNotificationExecutor.shutdown();
-        try{
-            metadataRetryExecutor.shutdown();
-        }catch (Throwable ignored){
-            // ignored
-            logger.warn(ignored.getMessage(),ignored);
-        }
+        logger.info("destroying executor repository ..");
+        shutdownExecutorService(poolRouterExecutor, "poolRouterExecutor");
+        shutdownExecutorService(metadataRetryExecutor, "metadataRetryExecutor");
+
         shutdownServiceExportExecutor();
         shutdownServiceReferExecutor();
 
@@ -347,25 +377,51 @@ public class DefaultExecutorRepository implements ExecutorRepository, ExtensionA
             if (executors != null) {
                 executors.values().forEach(executor -> {
                     if (executor != null && !executor.isShutdown()) {
-                        try{
+                        try {
                             ExecutorUtil.shutdownNow(executor, 100);
-                        }catch (Throwable ignored){
+                        } catch (Throwable ignored) {
                             // ignored
-                            logger.warn(ignored.getMessage(),ignored);
+                            logger.warn(ignored.getMessage(), ignored);
                         }
                     }
                 });
             }
         });
+        data.clear();
 
-        // TODO shutdown all executor services
-//        for (ScheduledExecutorService executorService : scheduledExecutors.listItems()) {
-//            executorService.shutdown();
-//        }
-//
-//        for (ExecutorService executorService : executorServiceRing.listItems()) {
-//            executorService.shutdown();
-//        }
+        // scheduledExecutors
+        shutdownExecutorServices(scheduledExecutors.listItems(), "scheduledExecutors");
+
+        // executorServiceRing
+        shutdownExecutorServices(executorServiceRing.listItems(), "executorServiceRing");
+
+        // shutdown share executor
+        shutdownExecutorService(sharedExecutor, "sharedExecutor");
+        shutdownExecutorService(sharedScheduledExecutor, "sharedScheduledExecutor");
+
+        // serviceDiscoveryAddressNotificationExecutorRing
+        shutdownExecutorServices(serviceDiscoveryAddressNotificationExecutorRing.listItems(),
+            "serviceDiscoveryAddressNotificationExecutorRing");
+
+        // registryNotificationExecutorRing
+        shutdownExecutorServices(registryNotificationExecutorRing.listItems(),
+            "registryNotificationExecutorRing");
+
+    }
+
+    private void shutdownExecutorServices(List<? extends ExecutorService> executorServices, String msg) {
+        for (ExecutorService executorService : executorServices) {
+            shutdownExecutorService(executorService, msg);
+        }
+    }
+
+    private void shutdownExecutorService(ExecutorService executorService, String name) {
+        try {
+            executorService.shutdownNow();
+        } catch (Exception e) {
+            String msg = "shutdown executor service [" + name + "] failed: ";
+            logger.warn(msg + e.getMessage(), e);
+        }
     }
 
     @Override

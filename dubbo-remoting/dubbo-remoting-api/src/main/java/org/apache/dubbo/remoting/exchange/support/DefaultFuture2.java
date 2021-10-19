@@ -18,6 +18,7 @@ package org.apache.dubbo.remoting.exchange.support;
 
 import org.apache.dubbo.common.logger.Logger;
 import org.apache.dubbo.common.logger.LoggerFactory;
+import org.apache.dubbo.common.resource.GlobalResourceInitializer;
 import org.apache.dubbo.common.threadpool.ThreadlessExecutor;
 import org.apache.dubbo.common.timer.HashedWheelTimer;
 import org.apache.dubbo.common.timer.Timeout;
@@ -32,7 +33,9 @@ import org.apache.dubbo.remoting.exchange.Response;
 
 import java.net.InetSocketAddress;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -44,12 +47,14 @@ import java.util.concurrent.TimeUnit;
  */
 public class DefaultFuture2 extends CompletableFuture<Object> {
 
-    public static final Timer TIME_OUT_TIMER = new HashedWheelTimer(
-            new NamedThreadFactory("dubbo-future-timeout", true),
-            30,
-            TimeUnit.MILLISECONDS);
+    private static GlobalResourceInitializer<Timer> TIME_OUT_TIMER = new GlobalResourceInitializer<>(
+        () -> new HashedWheelTimer(new NamedThreadFactory("dubbo-future-timeout", true),
+            30, TimeUnit.MILLISECONDS),
+        () -> destroy());
+
     private static final Logger logger = LoggerFactory.getLogger(DefaultFuture2.class);
     private static final Map<Long, DefaultFuture2> FUTURES = new ConcurrentHashMap<>();
+
     // invoke id.
     private final Request request;
     private final Connection connection;
@@ -57,6 +62,8 @@ public class DefaultFuture2 extends CompletableFuture<Object> {
     private final long start = System.currentTimeMillis();
     private volatile long sent;
     private Timeout timeoutCheckTask;
+
+    private List<Runnable> timeoutListeners = new ArrayList<>();
 
     private ExecutorService executor;
 
@@ -68,12 +75,30 @@ public class DefaultFuture2 extends CompletableFuture<Object> {
         FUTURES.put(request.getId(), this);
     }
 
+    public void addTimeoutListener(Runnable runnable) {
+        timeoutListeners.add(runnable);
+    }
+
+    public static void addTimeoutListener(long id, Runnable runnable) {
+        DefaultFuture2 defaultFuture2 = FUTURES.get(id);
+        defaultFuture2.addTimeoutListener(runnable);
+    }
+
+    public List<Runnable> getTimeoutListeners() {
+        return timeoutListeners;
+    }
+
     /**
      * check time out of the future
      */
     private static void timeoutCheck(DefaultFuture2 future) {
         TimeoutCheckTask task = new TimeoutCheckTask(future.getId());
-        future.timeoutCheckTask = TIME_OUT_TIMER.newTimeout(task, future.getTimeout(), TimeUnit.MILLISECONDS);
+        future.timeoutCheckTask = TIME_OUT_TIMER.get().newTimeout(task, future.getTimeout(), TimeUnit.MILLISECONDS);
+    }
+
+    public static void destroy() {
+        TIME_OUT_TIMER.remove(timer-> timer.stop());
+        FUTURES.clear();
     }
 
     /**
@@ -146,6 +171,7 @@ public class DefaultFuture2 extends CompletableFuture<Object> {
         errorResult.setErrorMessage("request future has been canceled.");
         this.doReceived(errorResult);
         FUTURES.remove(request.getId());
+        timeoutCheckTask.cancel();
         return true;
     }
 
@@ -236,7 +262,12 @@ public class DefaultFuture2 extends CompletableFuture<Object> {
             }
 
             if (future.getExecutor() != null) {
-                future.getExecutor().execute(() -> notifyTimeout(future));
+                future.getExecutor().execute(() -> {
+                    notifyTimeout(future);
+                    for (Runnable timeoutListener : future.getTimeoutListeners()) {
+                        timeoutListener.run();
+                    }
+                });
             } else {
                 notifyTimeout(future);
             }

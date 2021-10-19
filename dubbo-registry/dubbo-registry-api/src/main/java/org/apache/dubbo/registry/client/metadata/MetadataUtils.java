@@ -45,10 +45,6 @@ public class MetadataUtils {
 
     public static ConcurrentMap<String, Invoker<?>> metadataServiceInvokers = new ConcurrentHashMap<>();
 
-    private static final ProxyFactory proxyFactory = ExtensionLoader.getExtensionLoader(ProxyFactory.class).getAdaptiveExtension();
-
-    private static final Protocol protocol = ExtensionLoader.getExtensionLoader(Protocol.class).getAdaptiveExtension();
-
     public static RemoteMetadataServiceImpl getRemoteMetadataService(ScopeModel scopeModel) {
         return scopeModel.getBeanFactory().getBean(RemoteMetadataServiceImpl.class);
     }
@@ -58,7 +54,7 @@ public class MetadataUtils {
         WritableMetadataService.getDefaultExtension(url.getScopeModel()).publishServiceDefinition(url);
         // send to remote
         if (REMOTE_METADATA_STORAGE_TYPE.equalsIgnoreCase(url.getParameter(METADATA_KEY))) {
-            getRemoteMetadataService(ScopeModelUtil.getApplicationModel(url.getScopeModel())).publishServiceDefinition(url);
+            getRemoteMetadataService(url.getOrDefaultApplicationModel()).publishServiceDefinition(url);
         }
     }
 
@@ -81,14 +77,14 @@ public class MetadataUtils {
     }
 
     private static MetadataService referProxy(String key, ServiceInstance instance) {
-        MetadataServiceURLBuilder builder = null;
-        ExtensionLoader<MetadataServiceURLBuilder> loader
-                = ExtensionLoader.getExtensionLoader(MetadataServiceURLBuilder.class);
+        MetadataServiceURLBuilder builder;
+        ExtensionLoader<MetadataServiceURLBuilder> loader = instance.getOrDefaultApplicationModel()
+            .getExtensionLoader(MetadataServiceURLBuilder.class);
 
         Map<String, String> metadata = instance.getMetadata();
         // METADATA_SERVICE_URLS_PROPERTY_NAME is a unique key exists only on instances of spring-cloud-alibaba.
-        String dubboURLsJSON = metadata.get(METADATA_SERVICE_URLS_PROPERTY_NAME);
-        if (metadata.isEmpty() || StringUtils.isEmpty(dubboURLsJSON)) {
+        String dubboUrlsForJson = metadata.get(METADATA_SERVICE_URLS_PROPERTY_NAME);
+        if (metadata.isEmpty() || StringUtils.isEmpty(dubboUrlsForJson)) {
             builder = loader.getExtension(StandardMetadataServiceURLBuilder.NAME);
         } else {
             builder = loader.getExtension(SpringCloudMetadataServiceURLBuilder.NAME);
@@ -101,10 +97,20 @@ public class MetadataUtils {
         }
 
         // Simply rely on the first metadata url, as stated in MetadataServiceURLBuilder.
+        ScopeModel scopeModel = ScopeModelUtil.getOrDefaultApplicationModel(instance.getApplicationModel());
+        Protocol protocol = scopeModel.getExtensionLoader(Protocol.class).getAdaptiveExtension();
         Invoker<MetadataService> invoker = protocol.refer(MetadataService.class, urls.get(0));
         metadataServiceInvokers.put(key, invoker);
 
+        ProxyFactory proxyFactory = scopeModel.getExtensionLoader(ProxyFactory.class).getAdaptiveExtension();
         return proxyFactory.getProxy(invoker);
     }
 
+    public static ConcurrentMap<String, MetadataService> getMetadataServiceProxies() {
+        return metadataServiceProxies;
+    }
+
+    public static ConcurrentMap<String, Invoker<?>> getMetadataServiceInvokers() {
+        return metadataServiceInvokers;
+    }
 }

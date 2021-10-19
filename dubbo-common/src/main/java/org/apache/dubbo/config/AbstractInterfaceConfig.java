@@ -27,8 +27,11 @@ import org.apache.dubbo.common.utils.CollectionUtils;
 import org.apache.dubbo.common.utils.ConfigUtils;
 import org.apache.dubbo.common.utils.ReflectUtils;
 import org.apache.dubbo.common.utils.StringUtils;
+import org.apache.dubbo.config.context.ConfigManager;
 import org.apache.dubbo.config.support.Parameter;
+import org.apache.dubbo.rpc.model.ApplicationModel;
 import org.apache.dubbo.rpc.model.ScopeModel;
+import org.apache.dubbo.rpc.model.ScopeModelUtil;
 import org.apache.dubbo.rpc.model.ServiceMetadata;
 
 import java.lang.reflect.Method;
@@ -49,6 +52,7 @@ import static org.apache.dubbo.common.constants.CommonConstants.REFERENCE_FILTER
 import static org.apache.dubbo.common.constants.CommonConstants.RELEASE_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.TAG_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.TIMESTAMP_KEY;
+import static org.apache.dubbo.common.constants.MetricsConstants.PROTOCOL_PROMETHEUS;
 
 
 /**
@@ -64,6 +68,12 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
      * The interface name of the exported service
      */
     protected String interfaceName;
+
+    /**
+     * The classLoader of interface belong to
+     */
+    protected ClassLoader interfaceClassLoader;
+
     /**
      * The remote service version the customer/provider side will reference
      */
@@ -165,7 +175,6 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
     /**
      * The metrics configuration
      */
-    protected MetricsConfig metrics;
     protected MetadataReportConfig metadataReportConfig;
 
     protected ConfigCenterConfig configCenter;
@@ -198,31 +207,34 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
     }
 
     @Override
-    public void setScopeModel(ScopeModel scopeModel) {
-        super.setScopeModel(scopeModel);
-//        ApplicationModel applicationModel = ScopeModelUtil.getApplicationModel(scopeModel);
-//        if (this.configCenter != null && this.configCenter.getScopeModel() != applicationModel) {
-//            this.configCenter.setScopeModel(applicationModel);
+    protected void postProcessAfterScopeModelChanged(ScopeModel oldScopeModel, ScopeModel newScopeModel) {
+        super.postProcessAfterScopeModelChanged(oldScopeModel, newScopeModel);
+        // remove this config from old ConfigManager
+//        if (oldScopeModel != null && oldScopeModel instanceof ModuleModel) {
+//            ((ModuleModel)oldScopeModel).getConfigManager().removeConfig(this);
 //        }
-//        if (this.metadataReportConfig != null && this.metadataReportConfig.getScopeModel() != applicationModel) {
-//            this.metadataReportConfig.setScopeModel(applicationModel);
-//        }
-//        if (this.metrics != null && this.metrics.getScopeModel() != applicationModel) {
-//            this.metrics.setScopeModel(applicationModel);
-//        }
-//        if (this.monitor != null && this.monitor.getScopeModel() != applicationModel) {
-//            this.monitor.setScopeModel(applicationModel);
-//        }
-//        if (this.metadataReportConfig != null && this.metadataReportConfig.getScopeModel() != applicationModel) {
-//            this.metadataReportConfig.setScopeModel(applicationModel);
-//        }
-//        if (CollectionUtils.isNotEmpty(this.registries)) {
-//            this.registries.forEach(registryConfig -> {
-//                if (registryConfig.getScopeModel() != applicationModel) {
-//                    registryConfig.setScopeModel(applicationModel);
-//                }
-//            });
-//        }
+
+        // change referenced config's scope model
+        ApplicationModel applicationModel = ScopeModelUtil.getApplicationModel(scopeModel);
+        if (this.configCenter != null && this.configCenter.getScopeModel() != applicationModel) {
+            this.configCenter.setScopeModel(applicationModel);
+        }
+        if (this.metadataReportConfig != null && this.metadataReportConfig.getScopeModel() != applicationModel) {
+            this.metadataReportConfig.setScopeModel(applicationModel);
+        }
+        if (this.monitor != null && this.monitor.getScopeModel() != applicationModel) {
+            this.monitor.setScopeModel(applicationModel);
+        }
+        if (this.metadataReportConfig != null && this.metadataReportConfig.getScopeModel() != applicationModel) {
+            this.metadataReportConfig.setScopeModel(applicationModel);
+        }
+        if (CollectionUtils.isNotEmpty(this.registries)) {
+            this.registries.forEach(registryConfig -> {
+                if (registryConfig.getScopeModel() != applicationModel) {
+                    registryConfig.setScopeModel(applicationModel);
+                }
+            });
+        }
     }
 
     /**
@@ -249,6 +261,21 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
     }
 
     /**
+     * @deprecated After metrics config is refactored.
+     * This method should no longer use and will be deleted in the future.
+     */
+    @Deprecated
+    protected void appendMetricsCompatible(Map<String, String> map) {
+        MetricsConfig metricsConfig = getConfigManager().getMetrics().orElse(null);
+        if (metricsConfig != null) {
+            if (!metricsConfig.getProtocol().equals(PROTOCOL_PROMETHEUS)) {
+                map.put("metrics.protocol", metricsConfig.getProtocol());
+                map.put("metrics.port", metricsConfig.getPort());
+            }
+        }
+    }
+
+    /**
      * To obtain the method list in the port, use reflection when in native mode and javaassist otherwise.
      * @param interfaceClass
      * @return
@@ -263,7 +290,7 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
     }
 
     protected Environment getEnvironment() {
-        return getApplicationModel().getApplicationEnvironment();
+        return getScopeModel().getModelEnvironment();
     }
 
     @Override
@@ -598,6 +625,10 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         return getConfigManager().getApplicationOrElseThrow();
     }
 
+    /**
+     * @deprecated Use {@link AbstractInterfaceConfig#setScopeModel(ScopeModel)}
+     * @param application
+     */
     @Deprecated
     public void setApplication(ApplicationConfig application) {
         this.application = application;
@@ -610,14 +641,18 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         if (module != null) {
             return module;
         }
-        return getConfigManager().getModule().orElse(null);
+        return getModuleConfigManager().getModule().orElse(null);
     }
 
+    /**
+     * @deprecated Use {@link AbstractInterfaceConfig#setScopeModel(ScopeModel)}
+     * @param module
+     */
     @Deprecated
     public void setModule(ModuleConfig module) {
         this.module = module;
         if (module != null) {
-            getConfigManager().setModule(module);
+            getModuleConfigManager().setModule(module);
         }
     }
 
@@ -674,11 +709,17 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         return getConfigManager().getMonitor().orElse(null);
     }
 
+    /**
+     * @deprecated Use {@link org.apache.dubbo.config.context.ConfigManager#setMonitor(MonitorConfig)}
+     */
     @Deprecated
     public void setMonitor(String monitor) {
         setMonitor(new MonitorConfig(monitor));
     }
 
+    /**
+     * @deprecated Use {@link org.apache.dubbo.config.context.ConfigManager#setMonitor(MonitorConfig)}
+     */
     @Deprecated
     public void setMonitor(MonitorConfig monitor) {
         this.monitor = monitor;
@@ -695,6 +736,9 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         this.owner = owner;
     }
 
+    /**
+     * @deprecated Use {@link org.apache.dubbo.config.context.ConfigManager#getConfigCenter(String)}
+     */
     @Deprecated
     public ConfigCenterConfig getConfigCenter() {
         if (configCenter != null) {
@@ -707,6 +751,9 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         return null;
     }
 
+    /**
+     * @deprecated Use {@link org.apache.dubbo.config.context.ConfigManager#addConfigCenter(ConfigCenterConfig)}
+     */
     @Deprecated
     public void setConfigCenter(ConfigCenterConfig configCenter) {
         this.configCenter = configCenter;
@@ -747,6 +794,9 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         this.scope = scope;
     }
 
+    /**
+     * @deprecated Use {@link ConfigManager#getMetadataConfigs()}
+     */
     @Deprecated
     public MetadataReportConfig getMetadataReportConfig() {
         if (metadataReportConfig != null) {
@@ -759,27 +809,14 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
         return null;
     }
 
+    /**
+     * @deprecated Use {@link ConfigManager#addMetadataReport(MetadataReportConfig)}
+     */
     @Deprecated
     public void setMetadataReportConfig(MetadataReportConfig metadataReportConfig) {
         this.metadataReportConfig = metadataReportConfig;
         if (metadataReportConfig != null) {
             getConfigManager().addMetadataReport(metadataReportConfig);
-        }
-    }
-
-    @Deprecated
-    public MetricsConfig getMetrics() {
-        if (metrics != null) {
-            return metrics;
-        }
-        return getConfigManager().getMetrics().orElse(null);
-    }
-
-    @Deprecated
-    public void setMetrics(MetricsConfig metrics) {
-        this.metrics = metrics;
-        if (metrics != null) {
-            getConfigManager().setMetrics(metrics);
         }
     }
 
@@ -841,5 +878,13 @@ public abstract class AbstractInterfaceConfig extends AbstractMethodConfig {
     
     public void setInterface(String interfaceName) {
         this.interfaceName = interfaceName;
+    }
+
+    public ClassLoader getInterfaceClassLoader() {
+        return interfaceClassLoader;
+    }
+
+    public void setInterfaceClassLoader(ClassLoader interfaceClassLoader) {
+        this.interfaceClassLoader = interfaceClassLoader;
     }
 }

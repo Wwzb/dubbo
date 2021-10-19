@@ -51,7 +51,6 @@ import java.util.concurrent.Callable;
 import java.util.function.Function;
 
 import static org.apache.dubbo.common.constants.CommonConstants.CONSUMER_SIDE;
-import static org.apache.dubbo.common.constants.CommonConstants.METRICS_PORT;
 import static org.apache.dubbo.common.constants.CommonConstants.PROVIDER;
 import static org.apache.dubbo.common.constants.CommonConstants.SIDE_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.TIMEOUT_KEY;
@@ -82,7 +81,7 @@ public class MetricsFilterTest {
 
     private URL getUrl() {
         return URL.valueOf("dubbo://" + NetUtils.getLocalHost() + ":" + port +
-                "/org.apache.dubbo.monitor.dubbo.service.DemoService?" + METRICS_PORT + "=" + port);
+                "/org.apache.dubbo.monitor.dubbo.service.DemoService?" + "metrics.port" + "=" + port);
     }
 
     private void onInvokeReturns(Invoker<DemoService> invoker, AppResponse response) {
@@ -249,7 +248,8 @@ public class MetricsFilterTest {
             }
         }
         Protocol protocol = new DubboProtocol();
-        url = URL.valueOf("dubbo://" + NetUtils.getLocalAddress().getHostName() + ":" + port + "/" + MetricsService.class.getName());
+        // using host name might cause connection failure because multiple addresses might be configured to the same name!  
+        url = URL.valueOf("dubbo://" + NetUtils.getLocalHost() + ":" + port + "/" + MetricsService.class.getName());
         Invoker<MetricsService> invoker = protocol.refer(MetricsService.class, url);
         invocation = new RpcInvocation("getMetricsByGroup", DemoService.class.getName(), "", new Class<?>[]{String.class}, new Object[]{DUBBO_GROUP});
         try {
@@ -306,7 +306,8 @@ public class MetricsFilterTest {
         }
 
         Protocol protocol = new DubboProtocol();
-        url = URL.valueOf("dubbo://" + NetUtils.getLocalAddress().getHostName() + ":" + port + "/" + MetricsService.class.getName());
+        // using host name might cause connection failure because multiple addresses might be configured to the same name!
+        url = URL.valueOf("dubbo://" + NetUtils.getLocalHost() + ":" + port + "/" + MetricsService.class.getName());
         Invoker<MetricsService> invoker = protocol.refer(MetricsService.class, url);
         Invocation invocation = new RpcInvocation("getMetricsByGroup", DemoService.class.getName(), "", new Class<?>[]{String.class}, new Object[]{DUBBO_GROUP});
         try {
