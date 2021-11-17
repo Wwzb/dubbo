@@ -37,6 +37,8 @@ public abstract class AbstractDeployer<E extends ScopeModel> implements Deployer
 
     private volatile DeployState state = PENDING;
 
+    private volatile Throwable lastError;
+
     protected AtomicBoolean initialized = new AtomicBoolean(false);
 
     private List<DeployListener<E>> listeners = new ArrayList<>();
@@ -144,18 +146,28 @@ public abstract class AbstractDeployer<E extends ScopeModel> implements Deployer
         }
     }
 
-    protected void setFailed(Throwable cause) {
+    protected void setFailed(Throwable error) {
         this.state = FAILED;
+        this.lastError = error;
         for (DeployListener<E> listener : listeners) {
             try {
-                listener.onFailure(scopeModel, cause);
+                listener.onFailure(scopeModel, error);
             } catch (Throwable e) {
                 logger.error(getIdentifier() + " an exception occurred when handle failed event", e);
             }
         }
     }
 
+    @Override
+    public Throwable getError() {
+        return lastError;
+    }
+
     public boolean isInitialized() {
         return initialized.get();
+    }
+
+    protected String getIdentifier() {
+        return scopeModel.getDesc();
     }
 }

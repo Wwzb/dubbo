@@ -25,7 +25,6 @@ import org.apache.dubbo.common.deploy.ModuleDeployer;
 import org.apache.dubbo.common.logger.Logger;
 import org.apache.dubbo.common.logger.LoggerFactory;
 import org.apache.dubbo.common.threadpool.manager.ExecutorRepository;
-import org.apache.dubbo.common.utils.StringUtils;
 import org.apache.dubbo.config.ConsumerConfig;
 import org.apache.dubbo.config.ModuleConfig;
 import org.apache.dubbo.config.ProviderConfig;
@@ -66,7 +65,6 @@ public class DefaultModuleDeployer extends AbstractDeployer<ModuleModel> impleme
     private final ModuleConfigManager configManager;
 
     private final SimpleReferenceCache referenceCache;
-    private String identifier;
 
     private ApplicationDeployer applicationDeployer;
     private CompletableFuture startFuture;
@@ -129,41 +127,50 @@ public class DefaultModuleDeployer extends AbstractDeployer<ModuleModel> impleme
             throw new IllegalStateException(getIdentifier() + " is stopping or stopped, can not start again");
         }
 
-        if (isStarting() || isStarted()) {
-            return startFuture;
-        }
-
-        onModuleStarting();
-
-        // initialize
-        applicationDeployer.initialize();
-        initialize();
-
-        // export services
-        exportServices();
-
-        // prepare application instance
-        // exclude internal module to avoid wait itself
-        if (moduleModel != moduleModel.getApplicationModel().getInternalModule()) {
-            applicationDeployer.prepareApplicationInstance();
-        }
-
-        // refer services
-        referServices();
-
-        executorRepository.getSharedExecutor().submit(() -> {
-            try {
-                // wait for export finish
-                waitExportFinish();
-                // wait for refer finish
-                waitReferFinish();
-            } catch (Throwable e) {
-                logger.warn("wait for export/refer services occurred an exception", e);
-            } finally {
-                onModuleStarted();
+        try {
+            if (isStarting() || isStarted()) {
+                return startFuture;
             }
-        });
 
+            onModuleStarting();
+
+            // initialize
+            applicationDeployer.initialize();
+            initialize();
+
+            // export services
+            exportServices();
+
+            // prepare application instance
+            // exclude internal module to avoid wait itself
+            if (moduleModel != moduleModel.getApplicationModel().getInternalModule()) {
+                applicationDeployer.prepareApplicationInstance();
+            }
+
+            // refer services
+            referServices();
+
+            // if no async export/refer services, just set started
+            if (asyncExportingFutures.isEmpty() && asyncReferringFutures.isEmpty()) {
+                onModuleStarted();
+            } else {
+                executorRepository.getSharedExecutor().submit(() -> {
+                    try {
+                        // wait for export finish
+                        waitExportFinish();
+                        // wait for refer finish
+                        waitReferFinish();
+                    } catch (Throwable e) {
+                        logger.warn("wait for export/refer services occurred an exception", e);
+                    } finally {
+                        onModuleStarted();
+                    }
+                });
+            }
+        } catch (Throwable e) {
+            onModuleFailed(getIdentifier() + " start failed: " + e.toString(), e);
+            throw e;
+        }
         return startFuture;
     }
 
@@ -247,6 +254,16 @@ public class DefaultModuleDeployer extends AbstractDeployer<ModuleModel> impleme
         } finally {
             // complete module start future after application state changed
             completeStartFuture(true);
+        }
+    }
+
+    private void onModuleFailed(String msg, Throwable ex) {
+        try {
+            setFailed(ex);
+            logger.error(msg, ex);
+            applicationDeployer.notifyModuleChanged(moduleModel, DeployState.STARTED);
+        } finally {
+            completeStartFuture(false);
         }
     }
 
@@ -434,17 +451,6 @@ public class DefaultModuleDeployer extends AbstractDeployer<ModuleModel> impleme
             .filter(k -> k != null && k)
             .findAny()
             .isPresent();
-    }
-
-    public String getIdentifier() {
-        if (identifier == null) {
-            identifier = "Dubbo module[" + moduleModel.getInternalId() + "]";
-            if (moduleModel.getModelName() != null
-                && !StringUtils.isEquals(moduleModel.getModelName(), moduleModel.getInternalName())) {
-                identifier += "(" + moduleModel.getModelName() + ")";
-            }
-        }
-        return identifier;
     }
 
     @Override
