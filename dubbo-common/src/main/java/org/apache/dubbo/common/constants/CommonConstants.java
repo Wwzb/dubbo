@@ -217,6 +217,10 @@ public interface CommonConstants {
 
     String METADATA_KEY = "metadata-type";
 
+    String REPORT_METADATA_KEY = "report-metadata";
+
+    String REPORT_DEFINITION_KEY = "report-definition";
+
     String DEFAULT_METADATA_STORAGE_TYPE = "local";
 
     String REMOTE_METADATA_STORAGE_TYPE = "remote";
@@ -515,6 +519,8 @@ public interface CommonConstants {
     String STAGED_CLASSLOADER_KEY = "STAGED_CLASSLOADER";
 
     String PROVIDER_ASYNC_KEY = "PROVIDER_ASYNC";
+
+    String REGISTER_IP_KEY = "register.ip";
 
     String CURRENT_CLUSTER_INVOKER_KEY = "currentClusterInvoker";
 

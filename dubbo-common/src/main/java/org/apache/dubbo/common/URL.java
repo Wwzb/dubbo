@@ -61,6 +61,8 @@ import static org.apache.dubbo.common.constants.CommonConstants.ANYHOST_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.ANYHOST_VALUE;
 import static org.apache.dubbo.common.constants.CommonConstants.APPLICATION_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.COMMA_SPLIT_PATTERN;
+import static org.apache.dubbo.common.constants.CommonConstants.CONSUMER;
+import static org.apache.dubbo.common.constants.CommonConstants.GROUP_CHAR_SEPARATOR;
 import static org.apache.dubbo.common.constants.CommonConstants.GROUP_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.HOST_KEY;
 import static org.apache.dubbo.common.constants.CommonConstants.INTERFACE_KEY;
@@ -270,12 +272,12 @@ class URL implements Serializable {
         return result.clearParameters().addParameters(newMap);
     }
 
-    public static URL valueOf(URL url, String[] reserveParams, String[] reserveParamPrefixs) {
+    public static URL valueOf(URL url, String[] reserveParams, String[] reserveParamPrefixes) {
         Map<String, String> newMap = new HashMap<>();
         Map<String, String> oldMap = url.getParameters();
-        if (reserveParamPrefixs != null && reserveParamPrefixs.length != 0) {
+        if (reserveParamPrefixes != null && reserveParamPrefixes.length != 0) {
             for (Map.Entry<String, String> entry : oldMap.entrySet()) {
-                for (String reserveParamPrefix : reserveParamPrefixs) {
+                for (String reserveParamPrefix : reserveParamPrefixes) {
                     if (entry.getKey().startsWith(reserveParamPrefix) && StringUtils.isNotEmpty(entry.getValue())) {
                         newMap.put(entry.getKey(), entry.getValue());
                     }
@@ -1118,7 +1120,7 @@ class URL implements Serializable {
             return this;
         }
         if (pairs.length % 2 != 0) {
-            throw new IllegalArgumentException("Map pairs can not be odd numrer.");
+            throw new IllegalArgumentException("Map pairs can not be odd number.");
         }
         Map<String, String> map = new HashMap<>();
         int len = pairs.length / 2;
@@ -1398,7 +1400,14 @@ class URL implements Serializable {
         if (protocolServiceKey != null) {
             return protocolServiceKey;
         }
-        this.protocolServiceKey = getServiceKey() + ":" + getProtocol();
+        this.protocolServiceKey = getServiceKey();
+        /*
+        Special treatment if this is a consumer subscription url instance with no protocol specified - starts with 'consumer://'
+        If the specific protocol is specified on the consumer side, then this method will return as normal.
+        */
+        if (!CONSUMER.equals(getProtocol())) {
+            this.protocolServiceKey += (GROUP_CHAR_SEPARATOR + getProtocol());
+        }
         return protocolServiceKey;
     }
 

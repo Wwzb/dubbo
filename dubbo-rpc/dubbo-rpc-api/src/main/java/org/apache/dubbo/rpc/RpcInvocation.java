@@ -30,6 +30,7 @@ import java.io.Serializable;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
@@ -60,7 +61,7 @@ public class RpcInvocation implements Invocation, Serializable {
 
     private String methodName;
 
-    private String serviceName;
+    private String interfaceName;
 
     private transient Class<?>[] parameterTypes;
     private String parameterTypesDesc;
@@ -76,7 +77,7 @@ public class RpcInvocation implements Invocation, Serializable {
     /**
      * Only used on the caller side, will not appear on the wire.
      */
-    private transient Map<Object, Object> attributes = new HashMap<Object, Object>();
+    private transient Map<Object, Object> attributes = Collections.synchronizedMap(new HashMap<>());
 
     private transient Invoker<?> invoker;
 
@@ -125,64 +126,64 @@ public class RpcInvocation implements Invocation, Serializable {
         this.targetServiceUniqueName = invocation.getTargetServiceUniqueName();
     }
 
-    public RpcInvocation(ServiceModel serviceModel, Method method, String serviceName, String protocolServiceKey, Object[] arguments) {
-        this(serviceModel, method, serviceName, protocolServiceKey, arguments, null, null);
+    public RpcInvocation(ServiceModel serviceModel, Method method, String interfaceName, String protocolServiceKey, Object[] arguments) {
+        this(serviceModel, method, interfaceName, protocolServiceKey, arguments, null, null);
     }
 
     @Deprecated
-    public RpcInvocation(Method method, String serviceName, String protocolServiceKey, Object[] arguments) {
-        this(null, method, serviceName, protocolServiceKey, arguments, null, null);
+    public RpcInvocation(Method method, String interfaceName, String protocolServiceKey, Object[] arguments) {
+        this(null, method, interfaceName, protocolServiceKey, arguments, null, null);
     }
 
-    public RpcInvocation(ServiceModel serviceModel, Method method, String serviceName, String protocolServiceKey, Object[] arguments, Map<String, Object> attachment, Map<Object, Object> attributes) {
-        this(null, serviceModel, method.getName(), serviceName, protocolServiceKey, method.getParameterTypes(), arguments, attachment, null, attributes);
-    }
-
-    @Deprecated
-    public RpcInvocation(Method method, String serviceName, String protocolServiceKey, Object[] arguments, Map<String, Object> attachment, Map<Object, Object> attributes) {
-        this(null, null, method.getName(), serviceName, protocolServiceKey, method.getParameterTypes(), arguments, attachment, null, attributes);
-    }
-
-    public RpcInvocation(ServiceModel serviceModel, String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments) {
-        this(null, serviceModel, methodName, serviceName, protocolServiceKey, parameterTypes, arguments, null, null, null);
+    public RpcInvocation(ServiceModel serviceModel, Method method, String interfaceName, String protocolServiceKey, Object[] arguments, Map<String, Object> attachment, Map<Object, Object> attributes) {
+        this(null, serviceModel, method.getName(), interfaceName, protocolServiceKey, method.getParameterTypes(), arguments, attachment, null, attributes);
     }
 
     @Deprecated
-    public RpcInvocation(String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments) {
-        this(null, null, methodName, serviceName, protocolServiceKey, parameterTypes, arguments, null, null, null);
+    public RpcInvocation(Method method, String interfaceName, String protocolServiceKey, Object[] arguments, Map<String, Object> attachment, Map<Object, Object> attributes) {
+        this(null, null, method.getName(), interfaceName, protocolServiceKey, method.getParameterTypes(), arguments, attachment, null, attributes);
     }
 
-    public RpcInvocation(ServiceModel serviceModel, String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments, Map<String, Object> attachments) {
-        this(null, serviceModel, methodName, serviceName, protocolServiceKey, parameterTypes, arguments, attachments, null, null);
-    }
-
-    @Deprecated
-    public RpcInvocation(String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments, Map<String, Object> attachments) {
-        this(null, null, methodName, serviceName, protocolServiceKey, parameterTypes, arguments, attachments, null, null);
+    public RpcInvocation(ServiceModel serviceModel, String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments) {
+        this(null, serviceModel, methodName, interfaceName, protocolServiceKey, parameterTypes, arguments, null, null, null);
     }
 
     @Deprecated
-    public RpcInvocation(String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments,
+    public RpcInvocation(String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments) {
+        this(null, null, methodName, interfaceName, protocolServiceKey, parameterTypes, arguments, null, null, null);
+    }
+
+    public RpcInvocation(ServiceModel serviceModel, String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments, Map<String, Object> attachments) {
+        this(null, serviceModel, methodName, interfaceName, protocolServiceKey, parameterTypes, arguments, attachments, null, null);
+    }
+
+    @Deprecated
+    public RpcInvocation(String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments, Map<String, Object> attachments) {
+        this(null, null, methodName, interfaceName, protocolServiceKey, parameterTypes, arguments, attachments, null, null);
+    }
+
+    @Deprecated
+    public RpcInvocation(String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments,
                          Map<String, Object> attachments, Invoker<?> invoker, Map<Object, Object> attributes) {
-        this(null, null, methodName, serviceName, protocolServiceKey, parameterTypes, arguments, attachments, invoker, attributes);
+        this(null, null, methodName, interfaceName, protocolServiceKey, parameterTypes, arguments, attachments, invoker, attributes);
     }
 
-    public RpcInvocation(ServiceModel serviceModel, String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments,
+    public RpcInvocation(ServiceModel serviceModel, String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments,
                          Map<String, Object> attachments, Invoker<?> invoker, Map<Object, Object> attributes) {
-        this(null, serviceModel, methodName, serviceName, protocolServiceKey, parameterTypes, arguments, attachments, invoker, attributes);
+        this(null, serviceModel, methodName, interfaceName, protocolServiceKey, parameterTypes, arguments, attachments, invoker, attributes);
     }
 
-    public RpcInvocation(String targetServiceUniqueName, ServiceModel serviceModel, String methodName, String serviceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments,
+    public RpcInvocation(String targetServiceUniqueName, ServiceModel serviceModel, String methodName, String interfaceName, String protocolServiceKey, Class<?>[] parameterTypes, Object[] arguments,
                          Map<String, Object> attachments, Invoker<?> invoker, Map<Object, Object> attributes) {
         this.targetServiceUniqueName = targetServiceUniqueName;
         this.serviceModel = serviceModel;
         this.methodName = methodName;
-        this.serviceName = serviceName;
+        this.interfaceName = interfaceName;
         this.protocolServiceKey = protocolServiceKey;
         this.parameterTypes = parameterTypes == null ? new Class<?>[0] : parameterTypes;
         this.arguments = arguments == null ? new Object[0] : arguments;
         this.attachments = attachments == null ? new HashMap<>() : attachments;
-        this.attributes = attributes == null ? new HashMap<>() : attributes;
+        this.attributes = attributes == null ? Collections.synchronizedMap(new HashMap<>()) : attributes;
         this.invoker = invoker;
         initParameterDesc();
     }
@@ -191,14 +192,14 @@ public class RpcInvocation implements Invocation, Serializable {
         AtomicReference<ServiceDescriptor> serviceDescriptor = new AtomicReference<>();
         if (serviceModel != null) {
             serviceDescriptor.set(serviceModel.getServiceModel());
-        } else if (StringUtils.isNotEmpty(serviceName)){
+        } else if (StringUtils.isNotEmpty(interfaceName)){
             // TODO: Multi Instance compatible mode
             FrameworkModel.defaultModel()
                 .getServiceRepository()
                 .allProviderModels()
                 .stream()
                 .map(ProviderModel::getServiceModel)
-                .filter(s->serviceName.equals(s.getServiceName()))
+                .filter(s-> interfaceName.equals(s.getInterfaceName()))
                 .findFirst()
                 .ifPresent(serviceDescriptor::set);
         }
@@ -271,11 +272,11 @@ public class RpcInvocation implements Invocation, Serializable {
 
     @Override
     public String getServiceName() {
-        return serviceName;
+        return interfaceName;
     }
 
-    public void setServiceName(String serviceName) {
-        this.serviceName = serviceName;
+    public void setServiceName(String interfaceName) {
+        this.interfaceName = interfaceName;
     }
 
     @Override

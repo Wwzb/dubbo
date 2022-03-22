@@ -23,15 +23,18 @@ import org.apache.dubbo.common.logger.LoggerFactory;
 import org.apache.dubbo.common.url.component.URLParam;
 import org.apache.dubbo.common.utils.ArrayUtils;
 import org.apache.dubbo.common.utils.CollectionUtils;
+import org.apache.dubbo.common.utils.JsonUtils;
 import org.apache.dubbo.common.utils.StringUtils;
 
 import java.io.Serializable;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -61,15 +64,20 @@ public class MetadataInfo implements Serializable {
     private static final Logger logger = LoggerFactory.getLogger(MetadataInfo.class);
 
     private String app;
-    private String revision;
-    private Map<String, ServiceInfo> services;
+    // revision that will report to registry or remote meta center, must always update together with rawMetadataInfo, check {@link this#calAndGetRevision}
+    private volatile String revision;
+    // key format is '{group}/{interface name}:{version}:{protocol}'
+    private final Map<String, ServiceInfo> services;
 
-    private volatile AtomicBoolean initiated = new AtomicBoolean(false);
-
-    // used at runtime
+    /* used at runtime */
+    private transient AtomicBoolean initiated = new AtomicBoolean(false);
+    // Json formatted metadata that will report to remote meta center, must always update together with revision, check {@link this#calAndGetRevision}
+    private transient volatile String rawMetadataInfo;
+    // key format is '{group}/{interface name}:{version}'
+    private transient Map<String, Set<ServiceInfo>> subscribedServices;
     private transient final Map<String, String> extendParams;
     private transient final Map<String, String> instanceParams;
-    protected transient AtomicBoolean updated = new AtomicBoolean(false);
+    protected transient volatile boolean updated = false;
     private transient ConcurrentNavigableMap<String, SortedSet<URL>> subscribedServiceURLs;
     private transient ConcurrentNavigableMap<String, SortedSet<URL>> exportedServiceURLs;
     private transient ExtensionLoader<MetadataParamsFilter> loader;
@@ -90,6 +98,23 @@ public class MetadataInfo implements Serializable {
         this.instanceParams = new ConcurrentHashMap<>();
     }
 
+    private MetadataInfo(String app, String revision, Map<String, ServiceInfo> services, AtomicBoolean initiated,
+                        Map<String, String> extendParams, Map<String, String> instanceParams, boolean updated,
+                        ConcurrentNavigableMap<String, SortedSet<URL>> subscribedServiceURLs,
+                        ConcurrentNavigableMap<String, SortedSet<URL>> exportedServiceURLs,
+                        ExtensionLoader<MetadataParamsFilter> loader) {
+        this.app = app;
+        this.revision = revision;
+        this.services = new ConcurrentHashMap<>(services);
+        this.initiated = new AtomicBoolean(initiated.get());
+        this.extendParams = new ConcurrentHashMap<>(extendParams);
+        this.instanceParams = new ConcurrentHashMap<>(instanceParams);
+        this.updated = updated;
+        this.subscribedServiceURLs = subscribedServiceURLs == null ? null : new ConcurrentSkipListMap<>(subscribedServiceURLs);
+        this.exportedServiceURLs = exportedServiceURLs == null ? null : new ConcurrentSkipListMap<>(exportedServiceURLs);
+        this.loader = loader;
+    }
+
     /**
      * Initialize is needed when MetadataInfo is created from deserialization on the consumer side before being used for RPC call.
      */
@@ -100,6 +125,12 @@ public class MetadataInfo implements Serializable {
         if (CollectionUtils.isNotEmptyMap(services)) {
             services.forEach((_k, serviceInfo) -> {
                 serviceInfo.init();
+                // create duplicate serviceKey(without protocol)->serviceInfo mapping to support metadata search when protocol is not specified on consumer side.
+                if (subscribedServices == null) {
+                    subscribedServices = new HashMap<>();
+                }
+                Set<ServiceInfo> serviceInfos = subscribedServices.computeIfAbsent(serviceInfo.getServiceKey(), _key -> new HashSet<>());
+                serviceInfos.add(serviceInfo);
             });
         }
     }
@@ -120,7 +151,7 @@ public class MetadataInfo implements Serializable {
             exportedServiceURLs = new ConcurrentSkipListMap<>();
         }
         addURL(exportedServiceURLs, url);
-        updated.compareAndSet(false, true);
+        updated = true;
     }
 
     public synchronized void removeService(URL url) {
@@ -132,7 +163,7 @@ public class MetadataInfo implements Serializable {
             removeURL(exportedServiceURLs, url);
         }
 
-        updated.compareAndSet(false, true);
+        updated = true;
     }
 
     public String getRevision() {
@@ -140,14 +171,17 @@ public class MetadataInfo implements Serializable {
     }
 
     /**
-     * Reported status and metadata modification must be synchronized if used in multiple threads.
+     * Calculation of this instance's status and modification of the instance must be synchronized among different threads.
+     * <p>
+     * Usage of this method is strictly restricted at certain point of registration, always try using {@link this#getRevision()}
+     * instead of this method.
      */
     public synchronized String calAndGetRevision() {
-        if (revision != null && !updated.get()) {
+        if (revision != null && !updated) {
             return revision;
         }
 
-        updated.compareAndSet(true, false);
+        updated = false;
 
         if (CollectionUtils.isEmptyMap(services)) {
             this.revision = EMPTY_REVISION;
@@ -163,6 +197,7 @@ public class MetadataInfo implements Serializable {
                     logger.info(String.format("metadata revision changed: %s -> %s, app: %s, services: %d", this.revision, tempRevision, this.app, this.services.size()));
                 }
                 this.revision = tempRevision;
+                this.rawMetadataInfo = JsonUtils.getGson().toJson(this);
             }
         }
         return revision;
@@ -170,6 +205,10 @@ public class MetadataInfo implements Serializable {
 
     public void setRevision(String revision) {
         this.revision = revision;
+    }
+
+    public String getContent() {
+        return this.rawMetadataInfo;
     }
 
     public String getApp() {
@@ -184,8 +223,42 @@ public class MetadataInfo implements Serializable {
         return services;
     }
 
+    /**
+     * Get service info of an interface with specified group, version and protocol
+     * @param protocolServiceKey key is of format '{group}/{interface name}:{version}:{protocol}'
+     * @return the specific service info related to protocolServiceKey
+     */
     public ServiceInfo getServiceInfo(String protocolServiceKey) {
         return services.get(protocolServiceKey);
+    }
+
+    /**
+     * Get service infos of an interface with specified group, version.
+     * There may have several service infos of different protocols, this method will simply pick the first one.
+     *
+     * @param serviceKeyWithoutProtocol key is of format '{group}/{interface name}:{version}'
+     * @return the first service info related to serviceKey
+     */
+    public ServiceInfo getNoProtocolServiceInfo(String serviceKeyWithoutProtocol) {
+        if (CollectionUtils.isEmptyMap(subscribedServices)) {
+            return null;
+        }
+        Set<ServiceInfo> subServices = subscribedServices.get(serviceKeyWithoutProtocol);
+        if (CollectionUtils.isNotEmpty(subServices)) {
+           return subServices.iterator().next();
+        }
+        return null;
+    }
+
+    public ServiceInfo getValidServiceInfo(String serviceKey) {
+        ServiceInfo serviceInfo = getServiceInfo(serviceKey);
+        if (serviceInfo == null) {
+            serviceInfo = getNoProtocolServiceInfo(serviceKey);
+            if (serviceInfo == null) {
+                return null;
+            }
+        }
+        return serviceInfo;
     }
 
     public Map<String, String> getExtendParams() {
@@ -197,15 +270,13 @@ public class MetadataInfo implements Serializable {
     }
 
     public String getParameter(String key, String serviceKey) {
-        ServiceInfo serviceInfo = services.get(serviceKey);
-        if (serviceInfo == null) {
-            return null;
-        }
+        ServiceInfo serviceInfo = getValidServiceInfo(serviceKey);
+        if (serviceInfo == null) return null;
         return serviceInfo.getParameter(key);
     }
 
     public Map<String, String> getParameters(String serviceKey) {
-        ServiceInfo serviceInfo = services.get(serviceKey);
+        ServiceInfo serviceInfo = getValidServiceInfo(serviceKey);
         if (serviceInfo == null) {
             return Collections.emptyMap();
         }
@@ -217,7 +288,7 @@ public class MetadataInfo implements Serializable {
             return null;
         }
 
-        ServiceInfo serviceInfo = services.get(protocolServiceKey);
+        ServiceInfo serviceInfo = getValidServiceInfo(protocolServiceKey);
         if (serviceInfo == null) {
             return null;
         }
@@ -344,6 +415,11 @@ public class MetadataInfo implements Serializable {
         return services.keySet().toString();
     }
 
+    @Override
+    public synchronized MetadataInfo clone() {
+        return new MetadataInfo(app, revision, services, initiated, extendParams, instanceParams, updated, subscribedServiceURLs, exportedServiceURLs, loader);
+    }
+
     public static class ServiceInfo implements Serializable {
         private String name;
         private String group;
@@ -428,7 +504,7 @@ public class MetadataInfo implements Serializable {
             buildServiceKey(name, group, version);
             // init method params
             this.methodParams = URLParam.initMethodParameters(params);
-            // Actually, consumer params is empty after deserialization on the consumer side, so no need to initialize.
+            // Actually, consumer params is empty after deserialized on the consumer side, so no need to initialize.
             // Check how InstanceAddressURL operates on consumer url for more detail.
 //            this.consumerMethodParams = URLParam.initMethodParameters(consumerParams);
             // no need to init numbers for it's only for cache purpose
@@ -638,7 +714,6 @@ public class MetadataInfo implements Serializable {
         @Override
         public int hashCode() {
             return Objects.hash(getVersion(), getGroup(), getName(), getProtocol(), getParams());
-
         }
 
         @Override

@@ -19,6 +19,7 @@ package org.apache.dubbo.registry.client.metadata.store;
 import org.apache.dubbo.common.utils.JsonUtils;
 import org.apache.dubbo.metadata.MetadataInfo;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -40,6 +41,12 @@ public class MetaCacheManagerTest {
         String directory = getDirectoryOfClassPath();
         System.setProperty("dubbo.meta.cache.filePath", directory);
         System.setProperty("dubbo.meta.cache.fileName", "test-metadata.dubbo.cache");
+    }
+
+    @AfterEach
+    public void clear() throws URISyntaxException {
+        System.clearProperty("dubbo.meta.cache.filePath");
+        System.clearProperty("dubbo.meta.cache.fileName");
     }
 
     @Test
@@ -86,7 +93,7 @@ public class MetaCacheManagerTest {
             cacheManager.put("3", metadataInfo3);
 
             try {
-                MetaCacheManager.CacheRefreshTask task = new MetaCacheManager.CacheRefreshTask(cacheManager.cacheStore, cacheManager.cache);
+                MetaCacheManager.CacheRefreshTask<MetadataInfo> task = new MetaCacheManager.CacheRefreshTask<>(cacheManager.getCacheStore(), cacheManager.getCache(), cacheManager, 0);
                 task.run();
             } catch (Exception e) {
                 fail();

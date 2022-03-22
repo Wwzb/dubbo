@@ -283,9 +283,9 @@ public class DefaultServiceInstance implements ServiceInstance {
     }
 
     @Override
-    public InstanceAddressURL toURL() {
+    public InstanceAddressURL toURL(String protocol) {
         if (instanceAddressURL == null) {
-            instanceAddressURL = new InstanceAddressURL(this, serviceMetadata);
+            instanceAddressURL = new InstanceAddressURL(this, serviceMetadata, protocol);
         }
         return instanceAddressURL;
     }
@@ -335,7 +335,7 @@ public class DefaultServiceInstance implements ServiceInstance {
 
     public String toFullString() {
         return "DefaultServiceInstance{" +
-                ", serviceName='" + serviceName + '\'' +
+                "serviceName='" + serviceName + '\'' +
                 ", host='" + host + '\'' +
                 ", port=" + port +
                 ", enabled=" + enabled +
