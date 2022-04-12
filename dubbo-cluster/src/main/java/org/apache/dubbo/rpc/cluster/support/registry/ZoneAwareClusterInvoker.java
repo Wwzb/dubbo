@@ -40,7 +40,7 @@ import static org.apache.dubbo.common.constants.RegistryConstants.REGISTRY_ZONE_
 import static org.apache.dubbo.common.constants.RegistryConstants.ZONE_KEY;
 
 /**
- * When there're more than one registry for subscription.
+ * When there are more than one registry for subscription.
  * <p>
  * This extension provides a strategy to decide how to distribute traffics among them:
  * 1. registry marked as 'preferred=true' has the highest priority.
@@ -100,7 +100,7 @@ public class ZoneAwareClusterInvoker<T> extends AbstractClusterInvoker<T> {
 
         // load balance among all registries, with registry weight count in.
         Invoker<T> balancedInvoker = select(loadbalance, invocation, invokers, null);
-        if (balancedInvoker.isAvailable()) {
+        if (balancedInvoker!=null && balancedInvoker.isAvailable()) {
             return balancedInvoker.invoke(invocation);
         }
 
