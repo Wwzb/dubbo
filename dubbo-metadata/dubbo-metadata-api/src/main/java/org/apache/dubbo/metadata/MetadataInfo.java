@@ -47,6 +47,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.apache.dubbo.common.constants.CommonConstants.DOT_SEPARATOR;
 import static org.apache.dubbo.common.constants.CommonConstants.GROUP_CHAR_SEPARATOR;
 import static org.apache.dubbo.common.constants.CommonConstants.METHODS_KEY;
+import static org.apache.dubbo.common.constants.CommonConstants.TIMESTAMP_KEY;
 import static org.apache.dubbo.metadata.RevisionResolver.EMPTY_REVISION;
 
 public class MetadataInfo implements Serializable {
@@ -186,7 +187,7 @@ public class MetadataInfo implements Serializable {
                     logger.info(String.format("metadata revision changed: %s -> %s, app: %s, services: %d", this.revision, tempRevision, this.app, this.services.size()));
                 }
                 this.revision = tempRevision;
-                this.rawMetadataInfo = JsonUtils.getGson().toJson(this);
+                this.rawMetadataInfo = JsonUtils.getJson().toJson(this);
             }
         }
         return revision;
@@ -394,7 +395,7 @@ public class MetadataInfo implements Serializable {
 
         tmpInstanceParams.forEach((key, value) -> {
             String oldValue = instanceParams.put(key, value);
-            if (oldValue != null && !oldValue.equals(value)) {
+            if (!TIMESTAMP_KEY.equals(key) && oldValue != null && !oldValue.equals(value)) {
                 throw new IllegalStateException(String.format("Inconsistent instance metadata found in different services: %s, %s", oldValue, value));
             }
         });
