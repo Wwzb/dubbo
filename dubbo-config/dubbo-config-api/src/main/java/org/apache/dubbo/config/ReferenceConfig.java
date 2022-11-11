@@ -247,7 +247,7 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
     }
 
     protected synchronized void init() {
-        if (initialized) {
+        if (initialized && ref !=null ) {
             return;
         }
         try {
@@ -260,7 +260,7 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
 
             serviceMetadata.setServiceType(getServiceInterfaceClass());
             // TODO, uncomment this line once service key is unified
-            serviceMetadata.setServiceKey(URL.buildKey(interfaceName, group, version));
+            serviceMetadata.generateServiceKey();
 
             Map<String, String> referenceParameters = appendConfig();
             // init service-application mapping
@@ -274,8 +274,11 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
             } else {
                 serviceDescriptor = repository.registerService(interfaceClass);
             }
-            consumerModel = new ConsumerModel(serviceMetadata.getServiceKey(), proxy, serviceDescriptor, this,
-                getScopeModel(), serviceMetadata, createAsyncMethodInfo());
+            consumerModel = new ConsumerModel(serviceMetadata.getServiceKey(), proxy, serviceDescriptor,
+                getScopeModel(), serviceMetadata, createAsyncMethodInfo(), interfaceClassLoader);
+
+            // Compatible with dependencies on ServiceModel#getReferenceConfig() , and will be removed in a future version.
+            consumerModel.setConfig(this);
 
             repository.registerConsumer(consumerModel);
 
@@ -286,6 +289,7 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
             serviceMetadata.setTarget(ref);
             serviceMetadata.addAttribute(PROXY_CLASS_REF, ref);
 
+            consumerModel.setDestroyRunner(getDestroyRunner());
             consumerModel.setProxyObject(ref);
             consumerModel.initMethodModels();
 
@@ -639,7 +643,6 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
      * call, which is the default behavior
      */
     protected boolean shouldJvmRefer(Map<String, String> map) {
-        URL tmpUrl = new ServiceConfigURL("temp", "localhost", 0, map);
         boolean isJvmRefer;
         if (isInjvm() == null) {
             // if an url is specified, don't do local reference
@@ -647,6 +650,7 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
                 isJvmRefer = false;
             } else {
                 // by default, reference local service if there is
+                URL tmpUrl = new ServiceConfigURL("temp", "localhost", 0, map);
                 isJvmRefer = InjvmProtocol.getInjvmProtocol(getScopeModel()).isInjvmRefer(tmpUrl);
             }
         } else {
@@ -669,5 +673,9 @@ public class ReferenceConfig<T> extends ReferenceConfigBase<T> {
     @Deprecated
     public Invoker<?> getInvoker() {
         return invoker;
+    }
+
+    public Runnable getDestroyRunner() {
+        return this::destroy;
     }
 }
